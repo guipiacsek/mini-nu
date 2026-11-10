@@ -81,5 +81,6 @@
 
 (defn -main [& _]
   (let [port (parse-long (or (System/getenv "PORT") "3000"))]
-    (println (str "mini-nu listening on http://localhost:" port))
-    (jetty/run-jetty (app (db/connect! "mini-nu")) {:port port :join? true})))
+    (let [server (jetty/run-jetty (app (db/connect! "mini-nu")) {:port port :join? false})]
+      (println (str "mini-nu listening on http://localhost:" port))
+      (.join server))))
