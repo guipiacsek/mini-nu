@@ -5,6 +5,8 @@
         ring/ring-jetty-adapter {:mvn/version "1.15.6"}}
  :aliases
  {:run {:main-opts ["-m" "mini-nu.http"]}
+  :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.14" :git/sha "1176afd"}}
+          :ns-default build}
   :test {:extra-paths ["test"]
          :extra-deps {nubank/matcher-combinators {:mvn/version "3.11.0"}
                       org.clojure/test.check {:mvn/version "1.1.3"}

@@ -1,5 +1,7 @@
 # mini-nu
 
+[![CI](https://github.com/guipiacsek/mini-nu/actions/workflows/ci.yml/badge.svg)](https://github.com/guipiacsek/mini-nu/actions/workflows/ci.yml)
+
 A small bank ledger in Clojure and Datomic. Money can't be created, lost or spent twice, it moves between USD and BRL at a recorded rate, and you can read any account's balance on any past date.
 
 I built it to learn how Nubank builds software: Clojure, immutable data and Datomic.
@@ -44,12 +46,21 @@ A bank ledger has jobs that are easy to get wrong:
 
 ## Run it
 
-Requires Java 11+ and the [Clojure CLI](https://clojure.org/guides/install_clojure).
+**Just Java (no Clojure needed):** download `mini-nu.jar` from the [latest release](https://github.com/guipiacsek/mini-nu/releases/latest), then:
+
+```bash
+java -jar mini-nu.jar
+```
+
+**From source** (Java 11+ and the [Clojure CLI](https://clojure.org/guides/install_clojure)):
 
 ```bash
 clojure -M:test   # run the tests
 clojure -M:run    # http://localhost:3000, data stored in ./data
+clojure -T:build uber   # build target/mini-nu.jar yourself
 ```
+
+CI runs the tests and builds the jar on every push. Pushing a tag like `v1.0.0` also publishes a release with the jar attached.
 
 | Setting | Default | |
 |---|---|---|

@@ -9,7 +9,8 @@
             [ring.adapter.jetty :as jetty]
             [ring.util.response :as response])
   (:import (java.time Instant)
-           (java.util Date)))
+           (java.util Date))
+  (:gen-class))
 
 (def ^:private error-status
   {:invalid-amount 422
