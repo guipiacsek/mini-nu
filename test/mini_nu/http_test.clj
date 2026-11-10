@@ -37,6 +37,9 @@
     (is (match? {:status 201 :json {:every "week" :active? true}}
                 (call app :post "/schedules" {:from gui :to mom :amount 100 :every "week"})))
     (is (= 400 (:status (call app :get (str "/accounts/" gui "/statement?cursor=abc")))))
+    (is (= 400 (:status (app {:request-method :post :uri "/transfers" :headers {"content-type" "application/json" "idempotency-key" "x"}
+                              :body (java.io.ByteArrayInputStream. (.getBytes "{oops"))})))
+        "malformed JSON is a client error, not a crash")
     (is (match? {:status 200 :json {:transfer-outcomes {:ok 3}
                                     :ledger {:accounts 2 :active-schedules 1}
                                     :latency-ms {:p50 number?}}}

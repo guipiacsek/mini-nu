@@ -4,6 +4,7 @@
             [mini-nu.metrics :as metrics]
             [muuntaja.core :as m]
             [reitit.ring :as ring]
+            [reitit.ring.middleware.exception :as exception]
             [reitit.ring.middleware.muuntaja :as muuntaja]
             [reitit.ring.middleware.parameters :as parameters]
             [ring.adapter.jetty :as jetty]
@@ -155,7 +156,11 @@
             :middleware [wrap-metrics
                          wrap-audit
                          parameters/parameters-middleware
-                         muuntaja/format-middleware]}})
+                         muuntaja/format-negotiate-middleware
+                         muuntaja/format-response-middleware
+                         ;; turns malformed JSON into a 400 instead of a 500
+                         exception/exception-middleware
+                         muuntaja/format-request-middleware]}})
    (ring/create-default-handler)))
 
 (defn- start-scheduler!
