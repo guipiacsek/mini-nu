@@ -5,7 +5,8 @@
             [reitit.ring :as ring]
             [reitit.ring.middleware.muuntaja :as muuntaja]
             [reitit.ring.middleware.parameters :as parameters]
-            [ring.adapter.jetty :as jetty])
+            [ring.adapter.jetty :as jetty]
+            [ring.util.response :as response])
   (:import (java.time Instant)
            (java.util Date)))
 
@@ -48,7 +49,10 @@
 (defn app [conn]
   (ring/ring-handler
    (ring/router
-    [["/accounts"
+    [["/"
+      {:get (fn [_] (-> (response/resource-response "public/index.html")
+                        (response/content-type "text/html; charset=utf-8")))}]
+     ["/accounts"
       {:post (fn [{{:keys [owner]} :body-params}]
                (if (string? owner)
                  {:status 201 :body {:id (db/open-account! conn owner)}}
@@ -76,5 +80,6 @@
    (ring/create-default-handler)))
 
 (defn -main [& _]
-  (println "mini-nu listening on http://localhost:3000")
-  (jetty/run-jetty (app (db/connect! "mini-nu")) {:port 3000 :join? true}))
+  (let [port (parse-long (or (System/getenv "PORT") "3000"))]
+    (println (str "mini-nu listening on http://localhost:" port))
+    (jetty/run-jetty (app (db/connect! "mini-nu")) {:port port :join? true})))

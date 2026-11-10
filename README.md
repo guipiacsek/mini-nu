@@ -30,8 +30,11 @@ Requires Java 11+ and the [Clojure CLI](https://clojure.org/guides/install_cloju
 
 ```bash
 clojure -M:test   # run the tests
-clojure -M:run    # API on http://localhost:3000 (in-memory: data resets on restart)
+clojure -M:run    # API + demo page on http://localhost:3000 (in-memory: data resets on restart)
+PORT=3001 clojure -M:run   # any other port
 ```
+
+Open http://localhost:3000 for a one-page demo. It opens two accounts, and buttons for deposit, transfer, "retry last transfer" (same idempotency key: money moves once), "same key, new amount" (409) and time travel all call the real API, with the requests and responses shown in a live log.
 
 ## API
 
@@ -78,6 +81,8 @@ src/mini_nu/
   ledger.clj   pure rules: validation, double entry
   db.clj       queries, the transaction function, transfer!
   http.clj     reitit routes
+resources/public/
+  index.html   demo page (plain HTML + JS, no build step)
 test/mini_nu/
   ledger_test.clj
   db_test.clj

@@ -1,4 +1,4 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.6"}
         com.datomic/local {:mvn/version "1.0.301"}
         metosin/reitit {:mvn/version "0.11.0"}

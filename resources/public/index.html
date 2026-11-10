@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mini-nu demo</title>
+<style>
+  :root { --bg:#f6f5f8; --card:#fff; --text:#1d1a24; --muted:#6b6577; --line:#e4e1ea; --accent:#6c2bd9; --ok:#1a7f4b; --err:#b42318; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14121a; --card:#1e1b26; --text:#eeeaf5; --muted:#a29bb0; --line:#2e2a38; --accent:#a77bf3; --ok:#4cc38a; --err:#f97066; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui, -apple-system, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { margin:0; font-size:26px; } h2 { font-size:15px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .sub { color:var(--muted); margin:4px 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .acct .name { color:var(--muted); font-size:13px; } .acct .bal { font-size:28px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .acct .past { font-size:13px; color:var(--accent); min-height:18px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
+  input, select, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
+  input[type=number] { width:110px; }
+  button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
+  button.ghost { background:transparent; color:var(--accent); }
+  button:disabled { opacity:.4; cursor:default; }
+  .hint { color:var(--muted); font-size:13px; margin:4px 0 0; }
+  table { width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums; }
+  td, th { padding:6px 4px; border-bottom:1px solid var(--line); text-align:left; } td.amt, th.amt { text-align:right; }
+  .pos { color:var(--ok); } .neg { color:var(--err); }
+  #log { font:12.5px/1.5 ui-monospace, Menlo, monospace; max-height:220px; overflow:auto; margin:0; white-space:pre-wrap; word-break:break-all; }
+  #log .s2 { color:var(--ok); } #log .s4 { color:var(--err); }
+  @media (max-width:520px) { .grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>mini-nu</h1>
+  <p class="sub">A tiny double-entry ledger in Clojure + Datomic. Every button below calls the real API.</p>
+
+  <section class="card">
+    <h2>Accounts</h2>
+    <div class="grid" id="accounts"></div>
+  </section>
+
+  <section class="card">
+    <h2>Move money</h2>
+    <div class="row">
+      <span>Deposit</span> <input type="number" id="depAmt" value="100" min="0.01" step="0.01"> <span>into Gui</span>
+      <button id="depBtn">Deposit</button>
+    </div>
+    <div class="row">
+      <select id="dir"><option value="0">Gui → Mom</option><option value="1">Mom → Gui</option></select>
+      <input type="number" id="trAmt" value="25" min="0.01" step="0.01">
+      <button id="trBtn">Transfer</button>
+      <button class="ghost" id="retryBtn" disabled>Retry last transfer</button>
+      <button class="ghost" id="conflictBtn" disabled>Same key, new amount</button>
+    </div>
+    <p class="hint">"Retry" resends the exact request with the same Idempotency-Key: the money moves once. Changing the amount under the same key is refused (409).</p>
+  </section>
+
+  <section class="card">
+    <h2>Time travel</h2>
+    <div class="row">
+      <input type="datetime-local" id="asOf" step="1"> <button id="asOfBtn">Show balances at that time</button>
+    </div>
+    <p class="hint">Datomic never overwrites data, so any past balance can be read back.</p>
+  </section>
+
+  <section class="card">
+    <h2>Statement</h2>
+    <div class="row"><select id="stmtFor"><option value="0">Gui</option><option value="1">Mom</option></select></div>
+    <table><thead><tr><th>When</th><th>Transfer</th><th class="amt">Amount</th></tr></thead><tbody id="stmt"></tbody></table>
+  </section>
+
+  <section class="card">
+    <h2>API log</h2>
+    <pre id="log"></pre>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const usd = cents => (cents < 0 ? "-" : "") + "$" + (Math.abs(cents) / 100).toFixed(2);
+const cents = id => Math.round(parseFloat($(id).value) * 100);
+const accounts = [{ owner: "Gui" }, { owner: "Mom" }];
+let last = null, keyN = 0;
+
+async function api(method, path, body, key) {
+  const headers = { "content-type": "application/json" };
+  if (key) headers["Idempotency-Key"] = key;
+  const res = await fetch(path, { method, headers, body: body && JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  const line = document.createElement("div");
+  line.className = "s" + String(res.status)[0];
+  line.textContent = `${method} ${path}${key ? "  key=" + key : ""}${body ? "  " + JSON.stringify(body) : ""}\n  → ${res.status} ${JSON.stringify(data)}`;
+  $("log").prepend(line);
+  return data;
+}
+
+function renderAccounts(past) {
+  $("accounts").innerHTML = accounts.map((a, i) => `
+    <div class="acct"><div class="name">${a.owner}</div>
+      <div class="bal">${usd(a.balance ?? 0)}</div>
+      <div class="past">${past ? "at that time: " + usd(past[i]) : ""}</div></div>`).join("");
+}
+
+async function refresh() {
+  for (const a of accounts) a.balance = (await api("GET", `/accounts/${a.id}/balance`)).balance;
+  renderAccounts();
+  const rows = await api("GET", `/accounts/${accounts[$("stmtFor").value].id}/statement`);
+  $("stmt").innerHTML = rows.map(r => `<tr><td>${new Date(r.at).toLocaleTimeString()}</td>
+    <td>${r["transfer-id"].slice(0, 8)}</td><td class="amt ${r.amount < 0 ? "neg" : "pos"}">${usd(r.amount)}</td></tr>`).join("")
+    || `<tr><td colspan="3" class="hint">No entries yet</td></tr>`;
+}
+
+$("depBtn").onclick = async () => {
+  await api("POST", "/deposits", { to: accounts[0].id, amount: cents("depAmt") }, "dep-" + ++keyN);
+  refresh();
+};
+$("trBtn").onclick = async () => {
+  const [from, to] = $("dir").value === "0" ? accounts : [accounts[1], accounts[0]];
+  last = { key: "tr-" + ++keyN, body: { from: from.id, to: to.id, amount: cents("trAmt") } };
+  await api("POST", "/transfers", last.body, last.key);
+  $("retryBtn").disabled = $("conflictBtn").disabled = false;
+  refresh();
+};
+$("retryBtn").onclick = async () => { await api("POST", "/transfers", last.body, last.key); refresh(); };
+$("conflictBtn").onclick = async () => {
+  await api("POST", "/transfers", { ...last.body, amount: last.body.amount + 100 }, last.key);
+  refresh();
+};
+$("asOfBtn").onclick = async () => {
+  if (!$("asOf").value) return;
+  const at = new Date($("asOf").value).toISOString();
+  const past = [];
+  for (const a of accounts) past.push((await api("GET", `/accounts/${a.id}/balance?as-of=${at}`)).balance);
+  renderAccounts(past);
+};
+$("stmtFor").onchange = refresh;
+
+(async () => {
+  const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+  $("asOf").value = now.toISOString().slice(0, 19);
+  for (const a of accounts) a.id = (await api("POST", "/accounts", { owner: a.owner })).id;
+  refresh();
+})();
+</script>
+</body>
+</html>
