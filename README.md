@@ -1,28 +1,46 @@
 # mini-nu
 
-A tiny bank ledger in Clojure and Datomic. Money can't be created, lost or spent twice, and you can ask for any account's balance on any past date.
+A small bank ledger in Clojure and Datomic. Money can't be created, lost or spent twice, it moves between USD and BRL at a recorded rate, and you can read any account's balance on any past date.
 
 I built it to learn how Nubank builds software: Clojure, immutable data and Datomic.
 
+## Features
+
+- **Double-entry ledger** in USD and BRL; every currency always sums to zero.
+- **Cross-currency transfers.** The rate used is stored on the transfer, and changing the rate never rewrites the past.
+- **Idempotent transfers.** A retry with the same `Idempotency-Key` never moves money twice.
+- **No overdraft under load.** The balance check runs inside the database transaction.
+- **Reversals.** A transfer is undone by adding its exact opposite; nothing is ever deleted.
+- **Scheduled transfers** (every minute, day, week or month) that can't pay twice, even after a crash.
+- **Audit trail.** Every write records who, from where and with which request id, on the transaction itself.
+- **Statements** with date filters and pagination.
+- **Time travel.** `?as-of=` returns any past balance.
+- **Persistent storage.** Data survives restarts.
+- **Metrics:** request counts, money-movement outcomes and latency percentiles.
+- **Demo UI** at `/`: plain HTML and JS that drives the real API.
+
 ## The problem
 
-A bank ledger has three jobs that are easy to get wrong:
+A bank ledger has jobs that are easy to get wrong:
 
-1. **Never lose or invent money.** Every transfer must take exactly as much from one account as it gives to another.
-2. **Never move money twice.** Mobile networks drop connections, so clients retry. A retried transfer must not debit the customer again.
-3. **Never overdraw under load.** Two transfers from the same account at the same moment must not both pass the balance check.
+1. **Never lose or invent money.** Every transfer must take exactly as much as it gives, even across currencies.
+2. **Never move money twice.** Mobile networks drop connections, so clients retry, and schedulers restart.
+3. **Never overdraw under load.** Two transfers at the same moment must not both pass the balance check.
+4. **Never rewrite history.** Regulators and customers need to know what happened, when, at which rate, and who asked.
 
 ## Design decisions
 
 | Decision | Why |
 |---|---|
-| **Double-entry ledger.** A transfer writes two entries, a debit and a credit, that sum to zero. | Money is conserved by construction. Deposits are transfers from an `external` bank account, so there is no special case. |
-| **The balance is never stored**, only calculated as the sum of entries. | No stored balance that can drift away from the history. |
-| **Entries are append-only** (Datomic never overwrites). | `GET /balance?as-of=` comes for free from `d/as-of`: the past is still there. |
-| **Idempotency key per transfer**, stored with a uniqueness constraint. | A retry returns the original transfer. The same key with different data is rejected with 409. |
-| **The balance check runs inside a Datomic transaction function** (`mini-nu.db/transfer-tx`). | Datomic runs transactions one at a time, so the check and the write cannot be interleaved. No locks, no retry loops. |
-| **Pure rules live in `ledger.clj`**, away from the database. | The rules that matter most are the easiest to test. |
-| **Amounts are integer cents.** | No floating-point rounding with money. |
+| **Double entry.** A transfer writes entries that sum to zero per currency. A USD→BRL transfer writes four: the customer's USD out, the bank's USD in, the bank's BRL out, the receiver's BRL in. | Money is conserved by construction, even across currencies. Deposits are transfers from the bank's account, so there is no special case. |
+| **The balance is never stored**, only calculated from the entries. | No stored balance that can drift away from the history. |
+| **Append-only.** Datomic never overwrites, and a reversal adds the opposite entries instead of deleting. | `?as-of=` comes for free, and the full history is always auditable. |
+| **The FX rate is stored on each transfer.** Reversals use the original amounts, not today's rate. | A rate change can never alter what already happened. |
+| **Idempotency key per transfer** (unique in the database). Scheduled runs use `schedule-id + run time` as the key. | A retried request, or a scheduler that crashes mid-run, can't pay twice. |
+| **Checks run inside Datomic transaction functions** (`transfer-tx`, `reverse-tx`). | Datomic runs transactions one at a time, so a check and its write can't be interleaved. No locks, no retry loops. |
+| **Audit data is attached to the transaction entity.** | The who/where/request id is stored atomically with the data it explains, so it can't be missing. |
+| **Pure rules live in `ledger.clj`.** | The rules that matter most are the easiest to test. |
+| **Amounts are integer cents, and conversion uses banker's rounding.** | No floating-point errors, and no systematic rounding bias. |
 
 ## Run it
 
@@ -30,46 +48,61 @@ Requires Java 11+ and the [Clojure CLI](https://clojure.org/guides/install_cloju
 
 ```bash
 clojure -M:test   # run the tests
-clojure -M:run    # API + demo page on http://localhost:3000 (in-memory: data resets on restart)
-PORT=3001 clojure -M:run   # any other port
+clojure -M:run    # http://localhost:3000, data stored in ./data
 ```
 
-Open http://localhost:3000 for a one-page demo. It opens two accounts, and buttons for deposit, transfer, "retry last transfer" (same idempotency key: money moves once), "same key, new amount" (409) and time travel all call the real API, with the requests and responses shown in a live log.
+| Setting | Default | |
+|---|---|---|
+| `PORT` | `3000` | |
+| `MINI_NU_DATA` | `data` | Directory for the database. `mem` keeps everything in memory. |
+
+Open http://localhost:3000 and click **Create demo accounts** to get Gui (USD) and Mom (BRL).
 
 ## API
 
+| Method & path | What it does |
+|---|---|
+| `GET /accounts` · `POST /accounts {owner, currency}` | List or open accounts (`USD` or `BRL`) |
+| `GET /accounts/:id/balance?as-of=<ISO instant>` | Current or past balance |
+| `GET /accounts/:id/statement?from=&to=&limit=&cursor=` | Newest first; pass `next-cursor` for the next page |
+| `POST /deposits {to, amount}` | Needs an `Idempotency-Key` header |
+| `POST /transfers {from, to, amount}` | Needs an `Idempotency-Key` header; converts the currency if needed |
+| `GET /transfers/:id` | The transfer plus its audit record |
+| `POST /transfers/:id/reversal` | Reverse once; calling it again returns the same reversal |
+| `GET /fx-rates` · `PUT /fx-rates {from, to, rate}` | Sets the rate and its inverse |
+| `POST /schedules {from, to, amount, every, start-at?}` | `every` is `minute`, `day`, `week` or `month` |
+| `GET /accounts/:id/schedules` · `DELETE /schedules/:id` | List or cancel schedules |
+| `GET /metrics` | Request counts, outcomes, latency p50/p95/p99, ledger totals |
+
+Amounts are integer cents in the sender's currency. Optional headers: `X-Actor` (who is asking, stored in the audit trail) and `X-Request-Id` (generated and returned when missing).
+
 ```bash
-# open two accounts
-curl -s -H 'content-type: application/json' -d '{"owner":"Gui"}' localhost:3000/accounts
-# => {"id":"<A>"}
-
-# deposit $100.00 (amounts in cents)
-curl -s -H 'content-type: application/json' -H 'Idempotency-Key: dep-1' \
-  -d '{"to":"<A>","amount":10000}' localhost:3000/deposits
-
-# transfer $25.00; send it again with the same key and nothing moves twice
 curl -s -H 'content-type: application/json' -H 'Idempotency-Key: tr-1' \
-  -d '{"from":"<A>","to":"<B>","amount":2500}' localhost:3000/transfers
-
-curl -s localhost:3000/accounts/<A>/balance
-curl -s 'localhost:3000/accounts/<A>/balance?as-of=2026-11-10T02:00:00Z'
-curl -s localhost:3000/accounts/<A>/statement
+  -d '{"from":"<gui>","to":"<mom>","amount":2500}' localhost:3000/transfers
+# => {"amount":2500,"credited":13500,"fx-rate":5.4,"from-currency":"USD","to-currency":"BRL",...}
 ```
 
 | Response | When |
 |---|---|
-| `201` | Transfer done, or a retry of one that was done |
+| `201` | Done, or a retry of something already done |
 | `400` | Missing `Idempotency-Key`, or a malformed field |
-| `404` `unknown-account` | An account doesn't exist |
+| `404` | Unknown account, transfer or schedule |
 | `409` `idempotency-conflict` | The same key was sent with different data |
-| `422` `insufficient-funds` / `invalid-amount` / `same-account` | The transfer breaks a rule |
+| `422` | Breaks a rule: `insufficient-funds`, `invalid-amount`, `same-account`, `cannot-reverse-reversal`, ... |
 
 ## Tests
 
-- **Property-based** (test.check): random sequences of transfers between accounts never change the total money, never leave a customer balance negative, and the bank's external account always mirrors the customers' total.
-- **Idempotency:** a retry returns the same transfer and debits once, and a reused key with different data is refused.
-- **Concurrency:** 100 parallel $0.10 transfers from an account holding $5.00 result in exactly 50 successes and a balance of zero.
-- **Time travel:** the balance before a transfer is still readable after it.
+```bash
+clojure -M:test   # 15 tests, 69 assertions
+```
+
+- **Property-based** (test.check): random transfers across USD and BRL accounts keep every currency at zero and no customer balance negative.
+- **Concurrency:** 100 parallel transfers from one account never overdraw.
+- **Idempotency:** retries, conflicting retries, and a scheduler "crash" between paying and moving the schedule on.
+- **FX:** the stored rate, a rate change not touching old transfers, and a reversal using the original amounts.
+- **Reversals:** reversing once only, no reversing a reversal, and no clawing back money the receiver already spent.
+- **Schedules:** due/not-due runs, failed runs recorded, cancelling.
+- **Audit, paging, date filters, persistence across connections, and the HTTP layer end to end.**
 
 Assertions use [matcher-combinators](https://github.com/nubank/matcher-combinators).
 
@@ -77,20 +110,19 @@ Assertions use [matcher-combinators](https://github.com/nubank/matcher-combinato
 
 ```
 src/mini_nu/
-  schema.clj   Datomic schema
-  ledger.clj   pure rules: validation, double entry
-  db.clj       queries, the transaction function, transfer!
-  http.clj     reitit routes
+  schema.clj    Datomic schema
+  ledger.clj    pure rules: validation, double entry, FX, reversal, schedule dates
+  db.clj        queries, transaction functions, writes, the scheduler
+  http.clj      routes, audit and metrics middleware, startup
+  metrics.clj   in-process counters
 resources/public/
-  index.html   demo page (plain HTML + JS, no build step)
-test/mini_nu/
-  ledger_test.clj
-  db_test.clj
+  index.html    demo page (plain HTML + JS, no build step)
+test/mini_nu/   ledger, db, features and http tests
 ```
 
 ## What I'd do next
 
-- Durable storage (Datomic Local on disk) instead of in-memory.
-- Multi-currency BRL/USD transfers, with the exchange rate stored as an immutable fact on the transfer.
-- Expire idempotency keys after a retention window.
-- Pagination for statements.
+- Export metrics in Prometheus format, so they survive restarts and work across several instances.
+- Authentication, with the audit actor taken from the verified identity instead of a header.
+- Pull live FX quotes with an expiry time instead of a manually set rate.
+- Move statement filtering into the database index for accounts with millions of entries.

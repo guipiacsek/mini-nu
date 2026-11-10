@@ -5,144 +5,545 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mini-nu demo</title>
 <style>
-  :root { --bg:#f6f5f8; --card:#fff; --text:#1d1a24; --muted:#6b6577; --line:#e4e1ea; --accent:#6c2bd9; --ok:#1a7f4b; --err:#b42318; }
+  :root {
+    --bg:#f5f4f8; --card:#fff; --text:#1c1924; --muted:#6c6678; --line:#e6e3ec; --soft:#f1eef8;
+    --accent:#6c2bd9; --accent-text:#fff; --ok:#16794a; --ok-bg:#e7f6ee; --err:#b42318; --err-bg:#fdecea; --warn:#9a6700;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#14121a; --card:#1e1b26; --text:#eeeaf5; --muted:#a29bb0; --line:#2e2a38; --accent:#a77bf3; --ok:#4cc38a; --err:#f97066; }
+    :root {
+      --bg:#121017; --card:#1c1923; --text:#eeeaf6; --muted:#9f98ad; --line:#2c2836; --soft:#25212e;
+      --accent:#a77bf3; --accent-text:#160f24; --ok:#4cc38a; --ok-bg:#15291f; --err:#f97066; --err-bg:#2d1714; --warn:#e3b341;
+    }
   }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui, -apple-system, sans-serif; }
-  main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
-  h1 { margin:0; font-size:26px; } h2 { font-size:15px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
-  .sub { color:var(--muted); margin:4px 0 20px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  .acct .name { color:var(--muted); font-size:13px; } .acct .bal { font-size:28px; font-weight:650; font-variant-numeric:tabular-nums; }
-  .acct .past { font-size:13px; color:var(--accent); min-height:18px; }
-  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
-  input, select, button { font:inherit; padding:8px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
-  input[type=number] { width:110px; }
-  button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
+  [hidden] { display:none !important; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14.5px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:20px 16px 48px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+  h1 { margin:0; font-size:24px; letter-spacing:-.01em; } h1 span { color:var(--accent); }
+  .sub { color:var(--muted); margin:2px 0 0; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px; background:var(--card); border:1px solid var(--line); color:var(--muted); font-size:13px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--ok); }
+  .dot.off { background:var(--err); }
+  .layout { display:grid; grid-template-columns:minmax(0,5fr) minmax(0,7fr); gap:16px; align-items:start; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:16px; }
+  h2 { font-size:12.5px; margin:0 0 12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .acct { display:flex; align-items:center; gap:12px; padding:10px; margin:0 -6px; border-radius:10px; cursor:pointer; border:1px solid transparent; }
+  .acct:hover { background:var(--soft); } .acct.sel { background:var(--soft); border-color:var(--accent); }
+  .avatar { width:36px; height:36px; border-radius:50%; display:grid; place-items:center; background:var(--accent); color:var(--accent-text); font-weight:700; flex:none; }
+  .acct .who { flex:1; min-width:0; } .acct .who b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:1px 7px; border-radius:999px; background:var(--soft); color:var(--muted); }
+  .badge.ok { background:var(--ok-bg); color:var(--ok); } .badge.err { background:var(--err-bg); color:var(--err); }
+  .acct .bal { text-align:right; font-size:19px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .acct .past { display:block; font-size:12px; font-weight:500; color:var(--accent); }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .row + .row { margin-top:8px; }
+  .grow { flex:1; min-width:120px; }
+  label.f { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); }
+  input, select, button { font:inherit; padding:8px 10px; border-radius:9px; border:1px solid var(--line); background:var(--card); color:var(--text); min-width:0; }
+  input:focus, select:focus, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  button { cursor:pointer; background:var(--accent); color:var(--accent-text); border-color:var(--accent); font-weight:600; }
   button.ghost { background:transparent; color:var(--accent); }
+  button.small { padding:4px 9px; font-size:12.5px; }
+  button.danger { background:transparent; color:var(--err); border-color:var(--err); }
   button:disabled { opacity:.4; cursor:default; }
-  .hint { color:var(--muted); font-size:13px; margin:4px 0 0; }
-  table { width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums; }
-  td, th { padding:6px 4px; border-bottom:1px solid var(--line); text-align:left; } td.amt, th.amt { text-align:right; }
-  .pos { color:var(--ok); } .neg { color:var(--err); }
-  #log { font:12.5px/1.5 ui-monospace, Menlo, monospace; max-height:220px; overflow:auto; margin:0; white-space:pre-wrap; word-break:break-all; }
-  #log .s2 { color:var(--ok); } #log .s4 { color:var(--err); }
-  @media (max-width:520px) { .grid { grid-template-columns:1fr; } }
+  .hint { color:var(--muted); font-size:12.5px; margin:8px 0 0; }
+  .preview { margin-top:8px; padding:8px 10px; border-radius:9px; background:var(--soft); font-size:13px; min-height:36px; }
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin:-4px 0 14px; overflow-x:auto; }
+  .tabs button { background:none; border:none; border-bottom:2px solid transparent; border-radius:0; color:var(--muted); padding:8px 10px; white-space:nowrap; }
+  .tabs button.on { color:var(--text); border-bottom-color:var(--accent); }
+  .pane[hidden] { display:none; }
+  .tx { display:grid; grid-template-columns:32px 1fr auto; gap:10px; align-items:center; padding:10px 6px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .tx:hover { background:var(--soft); }
+  .tx .ic { width:32px; height:32px; border-radius:50%; display:grid; place-items:center; background:var(--soft); font-size:15px; }
+  .tx .meta { color:var(--muted); font-size:12.5px; }
+  .tx .amt { text-align:right; font-weight:650; font-variant-numeric:tabular-nums; }
+  .pos { color:var(--ok); } .neg { color:var(--text); }
+  .detail { grid-column:1 / -1; background:var(--soft); border-radius:10px; padding:10px 12px; font-size:13px; cursor:default; }
+  .detail dl { display:grid; grid-template-columns:max-content 1fr; gap:3px 12px; margin:0 0 8px; }
+  .detail dt { color:var(--muted); } .detail dd { margin:0; font-family:ui-monospace, Menlo, monospace; font-size:12px; word-break:break-all; }
+  .empty { color:var(--muted); text-align:center; padding:24px 8px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(130px,1fr)); gap:10px; margin-bottom:14px; }
+  .tile { background:var(--soft); border-radius:10px; padding:10px 12px; }
+  .tile .v { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; } .tile .l { color:var(--muted); font-size:12px; }
+  .bar { display:grid; grid-template-columns:minmax(120px, 45%) 1fr 32px; gap:8px; align-items:center; font-size:13px; margin:4px 0; }
+  .bar .track { height:10px; background:var(--soft); border-radius:5px; overflow:hidden; }
+  .bar .fill { height:100%; background:var(--accent); border-radius:5px; } .bar .fill.err { background:var(--err); }
+  table { width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
+  td, th { padding:6px 4px; border-bottom:1px solid var(--line); text-align:left; } th { color:var(--muted); font-weight:500; }
+  #log { font:12px/1.5 ui-monospace, Menlo, monospace; max-height:460px; overflow:auto; }
+  #log div { padding:6px 0; border-bottom:1px solid var(--line); white-space:pre-wrap; word-break:break-all; }
+  #log .s2 b { color:var(--ok); } #log .s4 b, #log .s5 b { color:var(--err); }
+  #toasts { position:fixed; right:16px; bottom:16px; display:flex; flex-direction:column; gap:8px; z-index:9; max-width:min(360px, calc(100vw - 32px)); }
+  .toast { padding:10px 14px; border-radius:10px; background:var(--ok-bg); color:var(--ok); border:1px solid currentColor; font-weight:600; box-shadow:0 6px 20px rgba(0,0,0,.12); animation:in .2s ease-out; }
+  .toast.err { background:var(--err-bg); color:var(--err); }
+  @keyframes in { from { transform:translateY(8px); opacity:0; } }
+  @media (max-width:860px) { .layout { grid-template-columns:1fr; } }
+  @media (prefers-reduced-motion: reduce) { .toast { animation:none; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>mini-nu</h1>
-  <p class="sub">A tiny double-entry ledger in Clojure + Datomic. Every button below calls the real API.</p>
-
-  <section class="card">
-    <h2>Accounts</h2>
-    <div class="grid" id="accounts"></div>
-  </section>
-
-  <section class="card">
-    <h2>Move money</h2>
-    <div class="row">
-      <span>Deposit</span> <input type="number" id="depAmt" value="100" min="0.01" step="0.01"> <span>into Gui</span>
-      <button id="depBtn">Deposit</button>
+  <header>
+    <div>
+      <h1>mini<span>-</span>nu</h1>
+      <p class="sub">A double-entry ledger in Clojure + Datomic. Every button calls the real API.</p>
     </div>
-    <div class="row">
-      <select id="dir"><option value="0">Gui → Mom</option><option value="1">Mom → Gui</option></select>
-      <input type="number" id="trAmt" value="25" min="0.01" step="0.01">
-      <button id="trBtn">Transfer</button>
-      <button class="ghost" id="retryBtn" disabled>Retry last transfer</button>
-      <button class="ghost" id="conflictBtn" disabled>Same key, new amount</button>
+    <span class="pill" id="status"><span class="dot"></span><span>connecting…</span></span>
+  </header>
+
+  <div class="layout">
+    <div>
+      <section class="card">
+        <h2>Accounts <button class="ghost small" id="newAcctToggle">+ New</button></h2>
+        <form class="row" id="newAcct" hidden style="margin-bottom:10px">
+          <input class="grow" id="newOwner" placeholder="Owner name" required maxlength="40">
+          <select id="newCur"><option>USD</option><option>BRL</option></select>
+          <button>Open</button>
+        </form>
+        <div id="accounts"></div>
+        <div class="row" style="margin-top:12px">
+          <input class="grow" type="datetime-local" id="asOf" step="1" aria-label="Balances as of">
+          <button class="ghost" id="asOfBtn">Balances at that time</button>
+        </div>
+        <p class="hint">Datomic never overwrites data, so any past balance can be read back.</p>
+      </section>
+
+      <section class="card">
+        <h2>Exchange rate</h2>
+        <div class="row">
+          <span>1 USD =</span>
+          <input type="number" id="rate" step="0.0001" min="0.0001" style="width:110px" aria-label="BRL per USD">
+          <span>BRL</span>
+          <button class="ghost" id="rateBtn">Update</button>
+        </div>
+        <p class="hint">Each cross-currency transfer stores the rate it used. Changing it never rewrites the past.</p>
+      </section>
+
+      <section class="card">
+        <div class="tabs" role="tablist" id="moveTabs">
+          <button class="on" data-pane="send">Send</button>
+          <button data-pane="deposit">Deposit</button>
+          <button data-pane="schedule">Schedule</button>
+        </div>
+
+        <form class="pane" id="send">
+          <div class="row">
+            <label class="f grow">From <select id="sFrom"></select></label>
+            <label class="f grow">To <select id="sTo"></select></label>
+          </div>
+          <div class="row"><label class="f grow">Amount <input type="number" id="sAmt" value="25" min="0.01" step="0.01" required></label></div>
+          <div class="preview" id="sPreview"></div>
+          <div class="row" style="margin-top:10px">
+            <button>Send</button>
+            <button type="button" class="ghost" id="retryBtn" disabled>Retry (same key)</button>
+            <button type="button" class="ghost" id="conflictBtn" disabled>Same key, new amount</button>
+          </div>
+          <p class="hint">Retry resends the exact request with the same Idempotency-Key: money moves once. A different amount under the same key is refused.</p>
+        </form>
+
+        <form class="pane" id="deposit" hidden>
+          <div class="row">
+            <label class="f grow">Into <select id="dTo"></select></label>
+            <label class="f grow">Amount <input type="number" id="dAmt" value="100" min="0.01" step="0.01" required></label>
+          </div>
+          <div class="row" style="margin-top:10px"><button>Deposit</button></div>
+        </form>
+
+        <form class="pane" id="schedule" hidden>
+          <div class="row">
+            <label class="f grow">From <select id="cFrom"></select></label>
+            <label class="f grow">To <select id="cTo"></select></label>
+          </div>
+          <div class="row">
+            <label class="f grow">Amount <input type="number" id="cAmt" value="10" min="0.01" step="0.01" required></label>
+            <label class="f grow">Every
+              <select id="cEvery"><option value="minute">minute (demo)</option><option value="day">day</option><option value="week">week</option><option value="month" selected>month</option></select>
+            </label>
+          </div>
+          <div class="row"><label class="f grow">First run (blank = now) <input type="datetime-local" id="cStart" step="1"></label></div>
+          <div class="row" style="margin-top:10px"><button>Create schedule</button></div>
+          <p class="hint">The scheduler checks every 5 seconds. Each run uses the schedule and its date as the idempotency key, so it can never pay twice.</p>
+        </form>
+      </section>
     </div>
-    <p class="hint">"Retry" resends the exact request with the same Idempotency-Key: the money moves once. Changing the amount under the same key is refused (409).</p>
-  </section>
 
-  <section class="card">
-    <h2>Time travel</h2>
-    <div class="row">
-      <input type="datetime-local" id="asOf" step="1"> <button id="asOfBtn">Show balances at that time</button>
-    </div>
-    <p class="hint">Datomic never overwrites data, so any past balance can be read back.</p>
-  </section>
+    <section class="card">
+      <div class="tabs" role="tablist" id="viewTabs">
+        <button class="on" data-pane="activity">Activity</button>
+        <button data-pane="schedules">Schedules</button>
+        <button data-pane="metrics">Metrics</button>
+        <button data-pane="log">API log</button>
+      </div>
 
-  <section class="card">
-    <h2>Statement</h2>
-    <div class="row"><select id="stmtFor"><option value="0">Gui</option><option value="1">Mom</option></select></div>
-    <table><thead><tr><th>When</th><th>Transfer</th><th class="amt">Amount</th></tr></thead><tbody id="stmt"></tbody></table>
-  </section>
+      <div class="pane" id="activity">
+        <div class="row" style="margin-bottom:6px">
+          <label class="f grow">From <input type="date" id="fFrom"></label>
+          <label class="f grow">To <input type="date" id="fTo"></label>
+          <button type="button" class="ghost" id="fClear" style="align-self:flex-end">Clear</button>
+        </div>
+        <div id="txs"></div>
+        <div class="row" style="justify-content:center; margin-top:10px"><button class="ghost" id="more" hidden>Load more</button></div>
+      </div>
 
-  <section class="card">
-    <h2>API log</h2>
-    <pre id="log"></pre>
-  </section>
+      <div class="pane" id="schedules" hidden><div id="scheds"></div></div>
+
+      <div class="pane" id="metrics" hidden>
+        <div class="tiles" id="tiles"></div>
+        <h2>Money movement results</h2>
+        <div id="outcomes" style="margin-bottom:16px"></div>
+        <h2>Requests</h2>
+        <table><thead><tr><th>Route</th><th>Status</th><th style="text-align:right">Count</th></tr></thead><tbody id="reqs"></tbody></table>
+        <p class="hint">Live from GET /metrics, refreshed every 3 seconds.</p>
+      </div>
+
+      <div class="pane" id="log" hidden><div id="logList"><p class="empty">Writes you make show up here with their full request and response.</p></div></div>
+    </section>
+  </div>
 </main>
+<div id="toasts" aria-live="polite"></div>
+
 <script>
 const $ = id => document.getElementById(id);
-const usd = cents => (cents < 0 ? "-" : "") + "$" + (Math.abs(cents) / 100).toFixed(2);
-const cents = id => Math.round(parseFloat($(id).value) * 100);
-const accounts = [{ owner: "Gui" }, { owner: "Mom" }];
-let last = null, keyN = 0;
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+const fmts = { USD: new Intl.NumberFormat("en-US", { style:"currency", currency:"USD" }),
+               BRL: new Intl.NumberFormat("pt-BR", { style:"currency", currency:"BRL" }) };
+const money = (cents, cur) => (fmts[cur] || fmts.USD).format(cents / 100);
+const toCents = v => Math.round(parseFloat(v) * 100);
+const localIso = d => new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+const ERRORS = {
+  "insufficient-funds": "Not enough balance",
+  "idempotency-conflict": "That key was already used for a different transfer",
+  "same-account": "Pick two different accounts",
+  "invalid-amount": "Enter an amount above zero",
+  "unknown-account": "Account not found",
+  "unknown-transfer": "Transfer not found",
+  "cannot-reverse-reversal": "A reversal can't be reversed",
+  "no-fx-rate": "No exchange rate for that pair",
+};
 
-async function api(method, path, body, key) {
-  const headers = { "content-type": "application/json" };
-  if (key) headers["Idempotency-Key"] = key;
-  const res = await fetch(path, { method, headers, body: body && JSON.stringify(body) });
-  const data = await res.json().catch(() => ({}));
-  const line = document.createElement("div");
-  line.className = "s" + String(res.status)[0];
-  line.textContent = `${method} ${path}${key ? "  key=" + key : ""}${body ? "  " + JSON.stringify(body) : ""}\n  → ${res.status} ${JSON.stringify(data)}`;
-  $("log").prepend(line);
-  return data;
+let transferCount = null, accounts = [], selected = null, rate = null, last = null, keyN = 0, cursor = null, open = null;
+
+function toast(msg, err) {
+  const t = document.createElement("div");
+  t.className = "toast" + (err ? " err" : "");
+  t.textContent = msg;
+  $("toasts").append(t);
+  setTimeout(() => t.remove(), 3500);
 }
+
+async function api(method, path, body, key, quiet) {
+  const headers = { "content-type": "application/json", "X-Actor": "demo-ui" };
+  if (key) headers["Idempotency-Key"] = key;
+  let res, data;
+  try {
+    res = await fetch(path, { method, headers, body: body && JSON.stringify(body) });
+    data = await res.json().catch(() => ({}));
+    setStatus(true);
+  } catch (e) {
+    setStatus(false);
+    throw e;
+  }
+  if (!quiet) {
+    const div = document.createElement("div");
+    div.className = "s" + String(res.status)[0];
+    div.innerHTML = `<b>${res.status}</b> ${esc(method)} ${esc(path)}${key ? `  <span class="badge">key ${esc(key)}</span>` : ""}` +
+      `\n<span style="color:var(--muted)">request-id ${esc(res.headers.get("X-Request-Id"))}</span>` +
+      (body ? `\n→ ${esc(JSON.stringify(body))}` : "") + `\n← ${esc(JSON.stringify(data))}`;
+    const list = $("logList");
+    if (list.querySelector(".empty")) list.innerHTML = "";
+    list.prepend(div);
+  }
+  return { ok: res.ok, status: res.status, data };
+}
+
+function report(r, okMsg) {
+  if (r.ok) toast(okMsg);
+  else toast(ERRORS[r.data.error] || r.data.error || "Request failed", true);
+  return r.ok;
+}
+
+function setStatus(up, n) {
+  if (n != null) transferCount = n;
+  n = transferCount;
+  $("status").innerHTML = `<span class="dot${up ? "" : " off"}"></span><span>${up ? "live" + (n != null ? ` · ${n} transfers` : "") : "server unreachable"}</span>`;
+}
+
+// ---------- accounts ----------
 
 function renderAccounts(past) {
-  $("accounts").innerHTML = accounts.map((a, i) => `
-    <div class="acct"><div class="name">${a.owner}</div>
-      <div class="bal">${usd(a.balance ?? 0)}</div>
-      <div class="past">${past ? "at that time: " + usd(past[i]) : ""}</div></div>`).join("");
+  $("accounts").innerHTML = accounts.length ? accounts.map(a => `
+    <div class="acct${a.id === selected ? " sel" : ""}" data-id="${a.id}" role="button" tabindex="0">
+      <div class="avatar">${esc(a.owner[0].toUpperCase())}</div>
+      <div class="who"><b>${esc(a.owner)}</b><span class="badge">${a.currency}</span></div>
+      <div class="bal">${money(a.balance, a.currency)}${past ? `<span class="past">then: ${money(past[a.id], a.currency)}</span>` : ""}</div>
+    </div>`).join("")
+    : `<div class="empty">No accounts yet.<br><button id="demoBtn" style="margin-top:10px">Create demo accounts</button></div>`;
+  $("demoBtn")?.addEventListener("click", createDemo);
+  const opts = accounts.map(a => `<option value="${a.id}">${esc(a.owner)} (${a.currency})</option>`).join("");
+  for (const id of ["sFrom", "sTo", "dTo", "cFrom", "cTo"]) {
+    const s = $(id), v = s.value;
+    s.innerHTML = opts;
+    if (accounts.some(a => a.id === v)) s.value = v;
+  }
+  if (accounts.length > 1) {
+    for (const [f, t] of [["sFrom", "sTo"], ["cFrom", "cTo"]])
+      if ($(f).value === $(t).value) $(t).value = accounts.find(a => a.id !== $(f).value).id;
+  }
+  updatePreview();
 }
 
-async function refresh() {
-  for (const a of accounts) a.balance = (await api("GET", `/accounts/${a.id}/balance`)).balance;
+async function loadAccounts(quiet = true) {
+  accounts = (await api("GET", "/accounts", null, null, quiet)).data;
+  if (!accounts.some(a => a.id === selected)) selected = accounts[0]?.id ?? null;
   renderAccounts();
-  const rows = await api("GET", `/accounts/${accounts[$("stmtFor").value].id}/statement`);
-  $("stmt").innerHTML = rows.map(r => `<tr><td>${new Date(r.at).toLocaleTimeString()}</td>
-    <td>${r["transfer-id"].slice(0, 8)}</td><td class="amt ${r.amount < 0 ? "neg" : "pos"}">${usd(r.amount)}</td></tr>`).join("")
-    || `<tr><td colspan="3" class="hint">No entries yet</td></tr>`;
 }
 
-$("depBtn").onclick = async () => {
-  await api("POST", "/deposits", { to: accounts[0].id, amount: cents("depAmt") }, "dep-" + ++keyN);
-  refresh();
+async function createDemo() {
+  const gui = (await api("POST", "/accounts", { owner: "Gui", currency: "USD" })).data.id;
+  const mom = (await api("POST", "/accounts", { owner: "Mom", currency: "BRL" })).data.id;
+  await api("POST", "/deposits", { to: gui, amount: 50000 }, "demo-" + Date.now());
+  selected = gui;
+  toast("Demo accounts ready: Gui (USD, $500) and Mom (BRL)");
+  refreshAll();
+}
+
+$("accounts").addEventListener("click", e => {
+  const row = e.target.closest(".acct");
+  if (!row) return;
+  selected = row.dataset.id;
+  cursor = null; open = null;
+  renderAccounts();
+  loadActivity();
+  loadSchedules();
+});
+$("accounts").addEventListener("keydown", e => { if (e.key === "Enter") e.target.closest(".acct")?.click(); });
+$("newAcctToggle").onclick = () => { $("newAcct").hidden = !$("newAcct").hidden; $("newOwner").focus(); };
+$("newAcct").onsubmit = async e => {
+  e.preventDefault();
+  const r = await api("POST", "/accounts", { owner: $("newOwner").value.trim(), currency: $("newCur").value });
+  if (report(r, `Opened an account for ${$("newOwner").value}`)) { selected = r.data.id; $("newAcct").reset(); $("newAcct").hidden = true; }
+  refreshAll();
 };
-$("trBtn").onclick = async () => {
-  const [from, to] = $("dir").value === "0" ? accounts : [accounts[1], accounts[0]];
-  last = { key: "tr-" + ++keyN, body: { from: from.id, to: to.id, amount: cents("trAmt") } };
-  await api("POST", "/transfers", last.body, last.key);
-  $("retryBtn").disabled = $("conflictBtn").disabled = false;
-  refresh();
-};
-$("retryBtn").onclick = async () => { await api("POST", "/transfers", last.body, last.key); refresh(); };
-$("conflictBtn").onclick = async () => {
-  await api("POST", "/transfers", { ...last.body, amount: last.body.amount + 100 }, last.key);
-  refresh();
-};
+
 $("asOfBtn").onclick = async () => {
   if (!$("asOf").value) return;
   const at = new Date($("asOf").value).toISOString();
-  const past = [];
-  for (const a of accounts) past.push((await api("GET", `/accounts/${a.id}/balance?as-of=${at}`)).balance);
+  const past = {};
+  for (const a of accounts) past[a.id] = (await api("GET", `/accounts/${a.id}/balance?as-of=${at}`, null, null, true)).data.balance;
   renderAccounts(past);
 };
-$("stmtFor").onchange = refresh;
+
+// ---------- fx ----------
+
+async function loadRate() {
+  const rates = (await api("GET", "/fx-rates", null, null, true)).data;
+  rate = rates["USD/BRL"];
+  if (document.activeElement !== $("rate")) $("rate").value = rate;
+  updatePreview();
+}
+$("rateBtn").onclick = async () => {
+  const r = await api("PUT", "/fx-rates", { from: "USD", to: "BRL", rate: parseFloat($("rate").value) });
+  report(r, `Rate updated: 1 USD = ${$("rate").value} BRL`);
+  loadRate();
+};
+
+// ---------- move money ----------
+
+const acct = id => accounts.find(a => a.id === id);
+
+function updatePreview() {
+  const f = acct($("sFrom").value), t = acct($("sTo").value), cents = toCents($("sAmt").value);
+  if (!f || !t || !(cents > 0)) { $("sPreview").textContent = "Pick two accounts and an amount."; return; }
+  if (f.id === t.id) { $("sPreview").textContent = "Pick two different accounts."; return; }
+  if (f.currency === t.currency) {
+    $("sPreview").innerHTML = `${esc(t.owner)} receives <b>${money(cents, t.currency)}</b>`;
+  } else {
+    const r = f.currency === "USD" ? rate : 1 / rate;
+    $("sPreview").innerHTML = `${esc(t.owner)} receives about <b>${money(Math.round(cents * r), t.currency)}</b>` +
+      ` <span class="badge">1 ${f.currency} = ${r.toFixed(4)} ${t.currency}</span>`;
+  }
+  if (cents > f.balance) $("sPreview").innerHTML += ` <span class="badge err">more than the balance</span>`;
+}
+for (const id of ["sFrom", "sTo", "sAmt"]) $(id).addEventListener("input", updatePreview);
+
+async function send(body, key) {
+  const r = await api("POST", "/transfers", body, key);
+  const t = acct(body.to);
+  report(r, r.ok ? `Sent ${money(r.data.amount, r.data["from-currency"])} → ${t.owner} received ${money(r.data.credited, r.data["to-currency"])}` : "");
+  refreshAll();
+  return r;
+}
+$("send").onsubmit = async e => {
+  e.preventDefault();
+  last = { key: "tr-" + Date.now() + "-" + ++keyN, body: { from: $("sFrom").value, to: $("sTo").value, amount: toCents($("sAmt").value) } };
+  await send(last.body, last.key);
+  $("retryBtn").disabled = $("conflictBtn").disabled = false;
+};
+$("retryBtn").onclick = async () => {
+  const before = acct(last.body.from).balance;
+  const r = await api("POST", "/transfers", last.body, last.key);
+  await loadAccounts();
+  if (r.ok) toast(`Retry returned the same transfer. Balance still ${money(acct(last.body.from).balance, acct(last.body.from).currency)}${acct(last.body.from).balance === before ? " (no double charge)" : ""}`);
+  else report(r);
+  refreshAll();
+};
+$("conflictBtn").onclick = async () => {
+  report(await api("POST", "/transfers", { ...last.body, amount: last.body.amount + 100 }, last.key));
+};
+
+$("deposit").onsubmit = async e => {
+  e.preventDefault();
+  const t = acct($("dTo").value);
+  report(await api("POST", "/deposits", { to: t.id, amount: toCents($("dAmt").value) }, "dep-" + Date.now() + "-" + ++keyN),
+         `Deposited ${money(toCents($("dAmt").value), t.currency)} into ${t.owner}`);
+  refreshAll();
+};
+
+$("schedule").onsubmit = async e => {
+  e.preventDefault();
+  const body = { from: $("cFrom").value, to: $("cTo").value, amount: toCents($("cAmt").value), every: $("cEvery").value };
+  if ($("cStart").value) body["start-at"] = new Date($("cStart").value).toISOString();
+  if (report(await api("POST", "/schedules", body), `Scheduled every ${body.every}`)) switchTab("viewTabs", "schedules");
+  refreshAll();
+};
+
+// ---------- activity ----------
+
+const ICON = { deposit: "↓", transfer: "⇄", reversal: "↺", scheduled: "⟳" };
+const LABEL = { deposit: "Deposit", transfer: "Transfer", reversal: "Reversal", scheduled: "Scheduled" };
+
+function txRow(i) {
+  const isOpen = open === i["transfer-id"];
+  return `<div class="tx" data-id="${i["transfer-id"]}">
+    <div class="ic">${ICON[i.kind] || "•"}</div>
+    <div><b>${esc(i.counterparty)}</b>
+      <div class="meta">${LABEL[i.kind] || i.kind} · ${new Date(i.at).toLocaleString()}
+        ${i["fx-rate"] ? ` · <span class="badge">rate ${(+i["fx-rate"]).toFixed(4)}</span>` : ""}
+        ${i["reversed-by"] ? ` · <span class="badge err">reversed</span>` : ""}</div></div>
+    <div class="amt ${i.amount > 0 ? "pos" : "neg"}">${i.amount > 0 ? "+" : "−"}${money(Math.abs(i.amount), i.currency)}</div>
+    ${isOpen ? `<div class="detail" id="detail">Loading…</div>` : ""}
+  </div>`;
+}
+
+async function loadActivity(append) {
+  if (!selected) { $("txs").innerHTML = `<p class="empty">Open an account to see its activity.</p>`; $("more").hidden = true; return; }
+  const q = new URLSearchParams({ limit: 10 });
+  if ($("fFrom").value) q.set("from", new Date($("fFrom").value + "T00:00:00").toISOString());
+  if ($("fTo").value) q.set("to", new Date($("fTo").value + "T23:59:59").toISOString());
+  if (append && cursor) q.set("cursor", cursor);
+  const page = (await api("GET", `/accounts/${selected}/statement?${q}`, null, null, true)).data;
+  const html = page.items.map(txRow).join("");
+  if (append) $("txs").insertAdjacentHTML("beforeend", html);
+  else $("txs").innerHTML = html || `<p class="empty">No activity in this range.</p>`;
+  cursor = page["next-cursor"];
+  $("more").hidden = !cursor;
+  if (open && $("detail")) loadDetail(open);
+}
+$("more").onclick = () => loadActivity(true);
+$("fFrom").onchange = $("fTo").onchange = () => { cursor = null; loadActivity(); };
+$("fClear").onclick = () => { $("fFrom").value = $("fTo").value = ""; cursor = null; loadActivity(); };
+
+$("txs").addEventListener("click", async e => {
+  if (e.target.closest(".detail")) {
+    const b = e.target.closest("button[data-reverse]");
+    if (b) {
+      b.disabled = true;
+      report(await api("POST", `/transfers/${b.dataset.reverse}/reversal`), "Transfer reversed. A new opposite entry was added; nothing was deleted");
+      refreshAll();
+    }
+    return;
+  }
+  const row = e.target.closest(".tx");
+  if (!row) return;
+  open = open === row.dataset.id ? null : row.dataset.id;
+  cursor = null;
+  loadActivity();
+});
+
+async function loadDetail(id) {
+  const t = (await api("GET", `/transfers/${id}`, null, null, true)).data;
+  const canReverse = t.kind !== "reversal" && !t["reversed-by"];
+  $("detail").innerHTML = `<dl>
+      <dt>Transfer</dt><dd>${esc(t.id)}</dd>
+      <dt>From → to</dt><dd>${esc(t["from-owner"])} ${money(t.amount, t["from-currency"])} → ${esc(t["to-owner"])} ${money(t.credited, t["to-currency"])}</dd>
+      ${t["fx-rate"] ? `<dt>Rate used</dt><dd>1 ${t["from-currency"]} = ${(+t["fx-rate"]).toFixed(4)} ${t["to-currency"]}</dd>` : ""}
+      ${t.reverses ? `<dt>Reverses</dt><dd>${esc(t.reverses)}</dd>` : ""}
+      ${t["reversed-by"] ? `<dt>Reversed by</dt><dd>${esc(t["reversed-by"])}</dd>` : ""}
+      <dt>Recorded at</dt><dd>${esc(t.audit.at)}</dd>
+      <dt>Actor</dt><dd>${esc(t.audit.actor ?? "—")}</dd>
+      <dt>Request id</dt><dd>${esc(t.audit["request-id"] ?? "—")}</dd>
+      <dt>IP</dt><dd>${esc(t.audit.ip ?? "—")}</dd>
+    </dl>
+    ${canReverse ? `<button class="danger small" data-reverse="${t.id}">Reverse this transfer</button>` : ""}`;
+}
+
+// ---------- schedules ----------
+
+async function loadSchedules() {
+  if (!selected) { $("scheds").innerHTML = ""; return; }
+  const list = (await api("GET", `/accounts/${selected}/schedules`, null, null, true)).data;
+  $("scheds").innerHTML = list.length ? list.map(s => `
+    <div class="tx" style="cursor:default">
+      <div class="ic">⟳</div>
+      <div><b>${esc(s["from-owner"])} → ${esc(s["to-owner"])}</b>
+        <div class="meta">every ${s.every} · ${s["active?"] ? "next " + new Date(s["next-run"]).toLocaleString() : "cancelled"}
+          ${s["last-result"] ? ` · <span class="badge ${s["last-result"] === "ok" ? "ok" : "err"}">last run: ${s["last-result"] === "ok" ? "paid" : esc(ERRORS[s["last-result"]] || s["last-result"])}</span>` : ""}</div></div>
+      <div class="amt">${money(s.amount, s.currency)}
+        ${s["active?"] ? `<div><button class="danger small" data-cancel="${s.id}" style="margin-top:4px">Cancel</button></div>` : ""}</div>
+    </div>`).join("") : `<p class="empty">No scheduled transfers for this account. Create one in the Schedule tab.</p>`;
+}
+$("scheds").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-cancel]");
+  if (!b) return;
+  report(await api("DELETE", `/schedules/${b.dataset.cancel}`), "Schedule cancelled");
+  loadSchedules();
+});
+
+// ---------- metrics ----------
+
+async function loadMetrics() {
+  const m = (await api("GET", "/metrics", null, null, true)).data;
+  setStatus(true, m.ledger.transfers);
+  if ($("metrics").hidden) return;
+  const lat = m["latency-ms"];
+  const tiles = [["Transfers", m.ledger.transfers], ["Accounts", m.ledger.accounts], ["Active schedules", m.ledger["active-schedules"]],
+                 ["p50 latency", lat.p50 != null ? lat.p50 + " ms" : "—"], ["p95 latency", lat.p95 != null ? lat.p95 + " ms" : "—"],
+                 ["Uptime", m["uptime-seconds"] < 120 ? m["uptime-seconds"] + " s" : Math.round(m["uptime-seconds"] / 60) + " min"]];
+  $("tiles").innerHTML = tiles.map(([l, v]) => `<div class="tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+  const outs = Object.entries(m["transfer-outcomes"]).sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...outs.map(o => o[1]));
+  $("outcomes").innerHTML = outs.length ? outs.map(([k, n]) => `<div class="bar"><span>${k === "ok" ? "Succeeded" : esc(ERRORS[k] || k)}</span>
+      <div class="track"><div class="fill${k === "ok" ? "" : " err"}" style="width:${n / max * 100}%"></div></div><b>${n}</b></div>`).join("")
+    : `<p class="empty">No money has moved since the server started.</p>`;
+  $("reqs").innerHTML = m.requests.map(r => `<tr><td>${esc(r.route)}</td><td><span class="badge ${r.status < 400 ? "ok" : "err"}">${r.status}</span></td><td style="text-align:right">${r.count}</td></tr>`).join("");
+}
+
+// ---------- tabs & refresh ----------
+
+function switchTab(group, pane) {
+  for (const b of $(group).querySelectorAll("button")) {
+    const on = b.dataset.pane === pane;
+    b.classList.toggle("on", on);
+    $(b.dataset.pane).hidden = !on;
+  }
+  if (pane === "metrics") loadMetrics();
+  if (pane === "schedules") loadSchedules();
+}
+for (const g of ["moveTabs", "viewTabs"]) $(g).addEventListener("click", e => { const b = e.target.closest("button"); if (b) switchTab(g, b.dataset.pane); });
+
+async function refreshAll() {
+  await loadAccounts();
+  await Promise.all([loadActivity(), loadSchedules(), loadMetrics()]);
+}
 
 (async () => {
-  const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
-  $("asOf").value = now.toISOString().slice(0, 19);
-  for (const a of accounts) a.id = (await api("POST", "/accounts", { owner: a.owner })).id;
-  refresh();
+  $("asOf").value = localIso(new Date());
+  await loadRate();
+  await refreshAll();
+  // scheduled transfers land on their own, so keep the screen current
+  setInterval(() => { if (!document.hidden) loadAccounts().then(() => { if (!open) loadActivity(); loadSchedules(); }).catch(() => {}); }, 5000);
+  setInterval(() => { if (!document.hidden) loadMetrics().catch(() => {}); }, 3000);
 })();
 </script>
 </body>

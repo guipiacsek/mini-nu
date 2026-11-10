@@ -7,21 +7,23 @@
             [matcher-combinators.test]
             [mini-nu.db :as db]))
 
-(defn- fresh-conn [] (db/connect! (str (random-uuid))))
-(defn- k [] (str (random-uuid)))
-(defn- balance [conn id] (db/balance (d/db conn) id))
+(defn fresh-conn [] (db/connect! (str (random-uuid))))
+(defn k [] (str (random-uuid)))
+(defn balance [conn id] (db/balance (d/db conn) id))
 
-(defn- funded-account [conn cents]
-  (let [id (db/open-account! conn "test")]
-    (db/deposit! conn {:to id :amount cents :idempotency-key (k)})
-    id))
+(defn funded-account
+  ([conn cents] (funded-account conn cents "USD"))
+  ([conn cents currency]
+   (let [id (db/open-account! conn "test" currency {})]
+     (db/deposit! conn {:to id :amount cents :idempotency-key (k)})
+     id)))
 
 (deftest transfer-test
   (let [conn (fresh-conn)
         alice (funded-account conn 1000)
         bob (db/open-account! conn "bob")]
     (testing "moves money"
-      (is (match? {:ok {:from alice :to bob :amount 300}}
+      (is (match? {:ok {:from alice :to bob :amount 300 :credited 300 :kind "transfer"}}
                   (db/transfer! conn {:from alice :to bob :amount 300 :idempotency-key (k)})))
       (is (= 700 (balance conn alice)))
       (is (= 300 (balance conn bob))))
@@ -32,8 +34,11 @@
     (testing "rejects unknown accounts"
       (is (= {:error :unknown-account}
              (db/transfer! conn {:from alice :to (random-uuid) :amount 1 :idempotency-key (k)}))))
-    (testing "statement lists every entry"
-      (is (match? [{:amount 1000} {:amount -300}] (db/statement (d/db conn) alice))))))
+    (testing "statement lists every entry, newest first"
+      (is (match? {:items [{:amount -300 :kind "transfer" :counterparty "bob"}
+                           {:amount 1000 :kind "deposit" :currency "USD"}]
+                   :next-cursor nil}
+                  (db/statement (d/db conn) alice {}))))))
 
 (deftest idempotency-test
   (let [conn (fresh-conn)
@@ -68,16 +73,23 @@
     (is (= 1000 (db/balance (d/as-of (d/db conn) before) alice)) "the past is still there")
     (is (= 600 (balance conn alice)))))
 
+(defn- currency-total
+  "Every account in a currency, including the bank's own. Double entry keeps this at zero."
+  [conn currency]
+  (->> (d/q '[:find ?id :in $ ?c :where [?a :account/currency ?c] [?a :account/id ?id]] (d/db conn) currency)
+       (map (comp #(balance conn %) first))
+       (reduce +)))
+
 (def ^:private gen-transfers
-  (gen/vector (gen/tuple (gen/choose 0 2) (gen/choose 0 2) (gen/choose 1 400)) 1 30))
+  (gen/vector (gen/tuple (gen/choose 0 3) (gen/choose 0 3) (gen/choose 1 400)) 1 30))
 
 (defspec money-is-never-created-or-destroyed 25
   (prop/for-all [transfers gen-transfers]
     (let [conn (fresh-conn)
-          accounts (vec (repeatedly 3 #(funded-account conn 500)))]
+          accounts [(funded-account conn 500 "USD") (funded-account conn 500 "USD")
+                    (funded-account conn 2500 "BRL") (funded-account conn 2500 "BRL")]]
       (doseq [[from to amount] transfers]
         (db/transfer! conn {:from (accounts from) :to (accounts to) :amount amount :idempotency-key (k)}))
-      (let [balances (map #(balance conn %) accounts)]
-        (and (= 1500 (reduce + balances))
-             (every? (complement neg?) balances)
-             (zero? (+ (reduce + balances) (balance conn db/external-id))))))))
+      (and (zero? (currency-total conn "USD"))
+           (zero? (currency-total conn "BRL"))
+           (every? #(not (neg? (balance conn %))) accounts)))))
