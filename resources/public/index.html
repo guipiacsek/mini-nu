@@ -314,7 +314,7 @@ function renderAccounts(past) {
 
 async function loadAccounts(quiet = true) {
   accounts = (await api("GET", "/accounts", null, null, quiet)).data;
-  if (!accounts.some(a => a.id === selected)) selected = accounts[0]?.id ?? null;
+  if (!accounts.some(a => a.id === selected)) selected = checking()[0]?.id ?? null;
   renderAccounts();
 }
 
@@ -638,6 +638,8 @@ async function refreshAll() {
 
 (async () => {
   $("asOf").value = localIso(new Date());
+  // links like /#cardPane or /#metrics open that tab
+  for (const g of ["moveTabs", "viewTabs"]) if ($(g).querySelector(`[data-pane="${CSS.escape(location.hash.slice(1))}"]`)) switchTab(g, location.hash.slice(1));
   await loadRate();
   await refreshAll();
   // scheduled transfers land on their own, so keep the screen current

@@ -30,6 +30,12 @@ jobs:
       - name: Build jar
         run: clojure -T:build uber
 
+      - name: Run demo.sh against the jar
+        run: |
+          MINI_NU_DATA=mem java -jar target/mini-nu.jar &
+          for i in $(seq 1 60); do curl -sf localhost:3000/accounts >/dev/null && break; sleep 1; done
+          ./demo.sh
+
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: mini-nu-jar

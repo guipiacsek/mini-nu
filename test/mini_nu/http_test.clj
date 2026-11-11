@@ -2,6 +2,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [jsonista.core :as j]
+            [matcher-combinators.matchers]
             [matcher-combinators.test]
             [mini-nu.db :as db]
             [mini-nu.http :as http]))
@@ -37,6 +38,10 @@
     (is (match? {:status 201 :json {:every "week" :active? true}}
                 (call app :post "/schedules" {:from gui :to mom :amount 100 :every "week"})))
     (is (= 400 (:status (call app :get (str "/accounts/" gui "/statement?cursor=abc")))))
+    (is (match? {:status 200 :json {:balance 0}} (call app :get (str "/accounts/" gui "/balance?as-of=2000-01-01T00:00:00Z")))
+        "a past balance")
+    (is (match? {:status 200 :json {:balance 10000}} (call app :get (str "/accounts/" gui "/balance?as-of=2999-01-01T00:00:00Z")))
+        "a time after the latest transaction answers with today's balance")
     (is (= 400 (:status (app {:request-method :post :uri "/transfers" :headers {"content-type" "application/json" "idempotency-key" "x"}
                               :body (java.io.ByteArrayInputStream. (.getBytes "{oops"))})))
         "malformed JSON is a client error, not a crash")
@@ -76,3 +81,14 @@
     (is (match? {:status 200 :json {:period #(#{"day" "night"} %) :used 650 :remaining number?}}
                 (call app :get (str "/accounts/" gui "/limit"))))))
 
+
+(deftest api-docs-test
+  (let [app (http/app (db/connect! (str (random-uuid))))
+        spec (call app :get "/swagger.json")]
+    (is (= 200 (:status spec)))
+    (is (match? {:paths {(keyword "/transfers") {:post {:summary string?
+                                                        :parameters (matcher-combinators.matchers/embeds
+                                                                     [{:in "header" :name "idempotency-key" :required true}])}}}}
+                (:json spec))
+        "the docs come from the same schemas that validate requests")
+    (is (= 200 (:status (call app :get "/api-docs/index.html"))))))

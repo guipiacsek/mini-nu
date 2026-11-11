@@ -8,6 +8,13 @@ I built it to learn how Nubank builds software: Clojure, immutable data and Dato
 
 **[How it works, and why →](docs/DESIGN.md)**: architecture, the life of a transfer, the data model, and the trade-offs.
 
+![The demo UI: Gui's USD account with a credit card, Mom's BRL account, recent activity and the day limit](docs/img/app.png)
+
+<table><tr>
+<td width="50%"><img src="docs/img/card.png" alt="Card tab: owed, available credit, last bill and this cycle's spending"><br><sub>Credit card with a monthly bill</sub></td>
+<td width="50%"><img src="docs/img/api-docs.png" alt="Interactive API docs generated from the request schemas"><br><sub>Interactive API docs at <code>/api-docs</code></sub></td>
+</tr></table>
+
 ## Features
 
 - **Double-entry ledger** in USD and BRL; every currency always sums to zero.
@@ -73,9 +80,25 @@ CI runs the tests and builds the jar on every push. Pushing a tag like `v1.0.0` 
 | `PORT` | `3000` | |
 | `MINI_NU_DATA` | `data` | Directory for the database. `mem` keeps everything in memory. |
 
-Open http://localhost:3000 and click **Create demo accounts** to get Gui (USD) and Mom (BRL).
+Then open:
+
+- **http://localhost:3000** for the demo UI. Click **Create demo accounts** to get Gui (USD) and Mom (BRL).
+- **http://localhost:3000/api-docs** for every endpoint, with **Try it out** buttons that send real requests. The page is generated from the same schemas that validate requests, so it can't drift out of date.
+
+### Guided tour in the terminal
+
+With the server running, [`demo.sh`](demo.sh) walks through the whole story: open accounts, convert USD to BRL, retry safely, get refused, read a past balance, reverse, check the limit, use the card, schedule, and read the statement. Each step prints the request and response and checks the status code. It needs `curl` and `jq`.
+
+```bash
+./demo.sh                        # http://localhost:3000
+./demo.sh http://localhost:3001  # any other address
+```
+
+CI runs it against the freshly built jar on every push.
 
 ## API
+
+The full, clickable reference is at `/api-docs` once the server runs.
 
 | Method & path | What it does |
 |---|---|
@@ -114,7 +137,7 @@ curl -s -H 'content-type: application/json' -H 'Idempotency-Key: tr-1' \
 ## Tests
 
 ```bash
-clojure -M:test   # 22 tests, 125 assertions
+clojure -M:test   # 23 tests, 130 assertions
 ```
 
 - **Property-based** (test.check): random transfers across USD and BRL accounts keep every currency at zero and no customer balance negative.
@@ -143,6 +166,8 @@ src/mini_nu/
 resources/public/
   index.html    demo page (plain HTML + JS, no build step)
 docs/DESIGN.md  architecture, diagrams and trade-offs
+docs/img/       README screenshots
+demo.sh         guided API tour; CI runs it against the jar
 test/mini_nu/   ledger, db, features, cards/limits, http and system tests
 ```
 
