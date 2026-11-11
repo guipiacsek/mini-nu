@@ -16,6 +16,13 @@
 
 (defn- iso [^java.util.Date d] (some-> d .toInstant str))
 
+(defn as-of
+  "Datomic refuses a time after its latest transaction; the present db is the answer then."
+  [db date]
+  (try (d/as-of db date)
+       (catch clojure.lang.ExceptionInfo e
+         (if (= :cognitect.anomalies/unavailable (:cognitect.anomalies/category (ex-data e))) db (throw e)))))
+
 (defn- with-audit
   "Attaches who/where to the transaction entity, so it is stored with the data it explains."
   [tx-data audit]
@@ -50,7 +57,8 @@
 
 (defn- account [db id]
   (when id
-    (ffirst (d/q '[:find (pull ?a [:db/id :account/id :account/owner :account/currency :account/external?])
+    (ffirst (d/q '[:find (pull ?a [:db/id :account/id :account/owner :account/currency :account/external?
+                                   :account/credit-limit :account/closing-day {:account/card-of [:account/id]}])
                    :in $ ?id
                    :where [?a :account/id ?id]]
                  db id))))
@@ -70,16 +78,29 @@
                    db account-id))
       0))
 
-(defn accounts [db]
-  (->> (d/q '[:find (pull ?a [:account/id :account/owner :account/currency])
+(defn- available
+  "What an account can spend: its balance plus any credit line."
+  [db acc]
+  (+ (balance db (:account/id acc)) (or (:account/credit-limit acc) 0)))
+
+(defn accounts
+  "Checking accounts and cards. A card's balance is negative while money is owed."
+  [db]
+  (->> (d/q '[:find (pull ?a [:account/id :account/owner :account/currency :account/credit-limit
+                              :account/closing-day {:account/card-of [:account/id]}])
               :where [?a :account/id]
                      (not [?a :account/external? true])]
             db)
-       (map (fn [[a]] {:id (:account/id a)
+       (map (fn [[a]]
+              (cond-> {:id (:account/id a)
+                       :kind (if (:account/credit-limit a) "card" "checking")
                        :owner (:account/owner a)
                        :currency (:account/currency a)
-                       :balance (balance db (:account/id a))}))
-       (sort-by :owner)))
+                       :balance (balance db (:account/id a))}
+                (:account/credit-limit a) (assoc :credit-limit (:account/credit-limit a)
+                                                 :closing-day (:account/closing-day a)
+                                                 :card-of (get-in a [:account/card-of :account/id])))))
+       (sort-by (juxt :owner :kind))))
 
 (defn fx-rate [db from to]
   (ffirst (d/q '[:find ?r :in $ ?p :where [?f :fx/pair ?p] [?f :fx/rate ?r]]
@@ -88,10 +109,10 @@
 (defn fx-rates [db]
   (into (sorted-map) (d/q '[:find ?p ?r :where [?f :fx/pair ?p] [?f :fx/rate ?r]] db)))
 
-(def ^:private account-pattern [:account/id :account/owner :account/currency :account/external?])
+(def ^:private account-pattern [:account/id :account/owner :account/currency :account/external? :account/credit-limit])
 
 (def ^:private transfer-pattern
-  [:transfer/id :transfer/amount :transfer/credited :transfer/fx-rate
+  [:transfer/id :transfer/amount :transfer/credited :transfer/fx-rate :transfer/memo
    {:transfer/from account-pattern}
    {:transfer/to account-pattern}
    {:transfer/reverses [:transfer/id]}
@@ -104,6 +125,8 @@
       (cond-> {:id (:transfer/id t)
                :kind (cond (:transfer/reverses t) "reversal"
                            (:transfer/schedule t) "scheduled"
+                           (:account/credit-limit from) "purchase"
+                           (:account/credit-limit to) "card-payment"
                            (:account/external? from) "deposit"
                            :else "transfer")
                :from (:account/id from) :from-owner (:account/owner from) :from-currency (:account/currency from)
@@ -111,6 +134,7 @@
                :amount (:transfer/amount t)
                :credited (:transfer/credited t)}
         (:transfer/fx-rate t) (assoc :fx-rate (:transfer/fx-rate t))
+        (:transfer/memo t) (assoc :memo (:transfer/memo t))
         (:transfer/reverses t) (assoc :reverses (get-in t [:transfer/reverses :transfer/id]))
         (seq (:transfer/_reverses t)) (assoc :reversed-by (-> t :transfer/_reverses first :transfer/id))
         (:transfer/schedule t) (assoc :schedule (get-in t [:transfer/schedule :schedule/id]))))))
@@ -158,11 +182,13 @@
     {:items (mapv (fn [[_ amount tx inst t]]
                     (let [tr (->transfer (d/pull db transfer-pattern t))
                           incoming? (pos? amount)]
-                      (merge (select-keys tr [:kind :fx-rate :reverses :reversed-by :schedule])
+                      (merge (select-keys tr [:kind :fx-rate :reverses :reversed-by :schedule :memo])
                              {:transfer-id (:id tr)
                               :amount amount
                               :currency (if incoming? (:to-currency tr) (:from-currency tr))
-                              :counterparty (if incoming? (:from-owner tr) (:to-owner tr))
+                              :counterparty (cond incoming? (:from-owner tr)
+                                                  (:memo tr) (:memo tr)
+                                                  :else (:to-owner tr))
                               :at (iso inst)
                               :cursor (str tx)})))
                   page)
@@ -198,6 +224,67 @@
        (map (comp ->schedule first))
        (sort-by (juxt (comp not :active?) :next-run))))
 
+(defn- sent-since
+  "What an account sent since `since`. Reversals don't count, and neither does
+  money it gets back: a limit caps what can leave in one period."
+  [db account-eid ^java.util.Date since]
+  (or (ffirst (d/q '[:find (sum ?amount)
+                     :with ?t
+                     :in $ ?a ?since
+                     :where [?t :transfer/from ?a ?tx]
+                            [?tx :db/txInstant ?at]
+                            [(>= ?at ?since)]
+                            [?t :transfer/amount ?amount]
+                            (not [?t :transfer/reverses])]
+                   db account-eid since))
+      0))
+
+(defn limit
+  "The time-of-day limit in force for a checking account at `now`."
+  [db account-id ^java.util.Date now]
+  (when-let [acc (account db account-id)]
+    (when-not (or (:account/external? acc) (:account/credit-limit acc))
+      (let [{:keys [period start end] :as p} (ledger/limit-period (:account/currency acc) now)
+            used (sent-since db (:db/id acc) start)]
+        {:period period
+         :limit (:limit p)
+         :used used
+         :remaining (max 0 (- (:limit p) used))
+         :resets-at (iso end)}))))
+
+(defn bill
+  "The card's last closed bill and the purchases since. The closed amount is the
+  balance as of the closing time, read straight from Datomic's history."
+  [db card-id ^java.util.Date now]
+  (when-let [card (account db card-id)]
+    (when-let [credit (:account/credit-limit card)]
+      (let [{:keys [closed-at due-at closes-at]} (ledger/bill-cycle (:account/currency card) (:account/closing-day card) now)
+            owed-at-close (max 0 (- (balance (as-of db closed-at) card-id)))
+            since (map first (d/q '[:find ?amount ?e
+                                    :in $ ?a ?since
+                                    :where [?e :entry/account ?a]
+                                           [?e :entry/amount ?amount ?tx]
+                                           [?tx :db/txInstant ?at]
+                                           [(> ?at ?since)]]
+                                  db (:db/id card) closed-at))
+            ;; payments and refunds go to the oldest bill first, like a real card
+            remaining (max 0 (- owed-at-close (reduce + (filter pos? since))))
+            bal (balance db card-id)]
+        {:card card-id
+         :currency (:account/currency card)
+         :credit-limit credit
+         :owed (max 0 (- bal))
+         :available (+ credit bal)
+         :closed {:closed-at (iso closed-at)
+                  :due-at (iso due-at)
+                  :amount owed-at-close
+                  :remaining remaining
+                  :status (cond (zero? remaining) "paid"
+                                (.after now due-at) "overdue"
+                                :else "open")}
+         :current {:spent (- (reduce + (filter neg? since)))
+                   :closes-at (iso closes-at)}}))))
+
 (defn stats [db]
   {:accounts (count (accounts db))
    :transfers (or (ffirst (d/q '[:find (count ?t) :where [?t :transfer/id]] db)) 0)
@@ -207,7 +294,7 @@
 
 (def ^:private errors
   #{:invalid-amount :same-account :insufficient-funds :unknown-account :idempotency-conflict
-    :no-fx-rate :unknown-transfer :cannot-reverse-reversal})
+    :no-fx-rate :unknown-transfer :cannot-reverse-reversal :over-limit :card-not-allowed})
 
 (defn- fail! [err]
   (throw (ex-info (name err) {:cognitect.anomalies/category :cognitect.anomalies/incorrect
@@ -219,7 +306,7 @@
 (defn transfer-tx
   "Runs inside the Datomic transaction, so the balance check and the write
   are atomic. Concurrent transfers cannot overdraw."
-  [db {:keys [id idempotency-key from to amount schedule]}]
+  [db {:keys [id idempotency-key from to amount schedule purchase? memo]}]
   (if-let [prev (find-transfer db idempotency-key)]
     (if (= [from to amount] ((juxt :from :to :amount) prev))
       [] ; a retry: the money already moved
@@ -227,10 +314,16 @@
     (let [from-acc (account db from)
           to-acc (account db to)]
       (when-not (and from-acc to-acc) (fail! :unknown-account))
-      (some-> (ledger/validate {:from from :to to :amount amount}
-                               (balance db from)
-                               (:account/external? from-acc))
-              fail!)
+      ;; a card only pays for purchases; it can't send money to people
+      (when-not (= (boolean purchase?) (boolean (:account/credit-limit from-acc))) (fail! :card-not-allowed))
+      (let [external? (:account/external? from-acc)
+            period (when-not (or external? purchase?)
+                     (ledger/limit-period (:account/currency from-acc) (java.util.Date.)))]
+        (some-> (ledger/validate {:from from :to to :amount amount}
+                                 {:available (available db from-acc)
+                                  :external? external?
+                                  :room (when period (- (:limit period) (sent-since db (:db/id from-acc) (:start period))))})
+                fail!))
       (let [from-cur (:account/currency from-acc)
             to-cur (:account/currency to-acc)
             fx? (not= from-cur to-cur)
@@ -248,6 +341,7 @@
                                               :amount amount :credited credited}
                                        fx? (assoc :from-pool (pool db from-cur) :to-pool (pool db to-cur))))}
            rate (assoc :transfer/fx-rate rate)
+           memo (assoc :transfer/memo memo)
            schedule (assoc :transfer/schedule [:schedule/id schedule]))]))))
 
 (defn reverse-tx
@@ -260,7 +354,7 @@
       (let [t (ffirst (d/q '[:find (pull ?t [:db/id :transfer/amount :transfer/credited
                                              {:transfer/reverses [:db/id]}
                                              {:transfer/from [:db/id :account/id :account/external?]}
-                                             {:transfer/to [:db/id :account/id :account/external?]}
+                                             {:transfer/to [:db/id :account/id :account/external? :account/credit-limit]}
                                              {:transfer/entries [{:entry/account [:db/id]} :entry/amount]}])
                              :in $ ?id
                              :where [?t :transfer/id ?id]]
@@ -270,7 +364,7 @@
         (when (:transfer/reverses t) (fail! :cannot-reverse-reversal))
         ;; the recipient must still hold what they received
         (when (and (not (:account/external? to))
-                   (< (balance db (:account/id to)) (:transfer/credited t)))
+                   (< (available db to) (:transfer/credited t)))
           (fail! :insufficient-funds))
         [{:transfer/id id
           :transfer/idempotency-key k
@@ -329,6 +423,52 @@
    (let [id (random-uuid)]
      (d/transact conn {:tx-data (with-audit [{:account/id id :account/owner owner :account/currency currency}] audit)})
      id)))
+
+(defn open-card!
+  "A credit card tied to a checking account, which pays its bills.
+  Returns {:ok card} or {:error keyword}."
+  [conn account-id {:keys [credit-limit closing-day]} audit]
+  (let [acc (account (d/db conn) account-id)
+        id (random-uuid)]
+    (cond
+      (or (nil? acc) (:account/external? acc) (:account/credit-limit acc)) {:error :unknown-account}
+      (not (pos-int? credit-limit)) {:error :invalid-amount}
+      (not (and (int? closing-day) (<= 1 closing-day 28))) {:error :invalid-closing-day}
+      :else (try
+              (d/transact conn {:tx-data (with-audit [{:account/id id
+                                                       :account/owner (:account/owner acc)
+                                                       :account/currency (:account/currency acc)
+                                                       :account/credit-limit credit-limit
+                                                       :account/closing-day closing-day
+                                                       :account/card-of (:db/id acc)}]
+                                                     audit)})
+              {:ok (first (filter #(= id (:id %)) (accounts (d/db conn))))}
+              (catch clojure.lang.ExceptionInfo e
+                ;; :account/card-of is unique, so a racing second card fails here
+                (if (= :cognitect.anomalies/conflict (:cognitect.anomalies/category (ex-data e)))
+                  {:error :card-exists}
+                  (throw e)))))))
+
+(defn- card [db card-id]
+  (let [c (account db card-id)] (when (:account/credit-limit c) c)))
+
+(defn purchase!
+  "Charges the card. The money goes to the bank, which settles with the merchant."
+  [conn {:keys [card-id amount merchant idempotency-key]} audit]
+  (if-let [c (card (d/db conn) card-id)]
+    (transfer! conn {:from card-id :to (external-ids (:account/currency c)) :amount amount
+                     :purchase? true :memo merchant :idempotency-key idempotency-key}
+               audit)
+    {:error :unknown-card}))
+
+(defn pay-bill!
+  "Moves money from the card's checking account to the card."
+  [conn {:keys [card-id amount idempotency-key]} audit]
+  (if-let [c (card (d/db conn) card-id)]
+    (transfer! conn {:from (get-in c [:account/card-of :account/id]) :to card-id :amount amount
+                     :idempotency-key idempotency-key}
+               audit)
+    {:error :unknown-card}))
 
 (defn create-schedule!
   "Returns {:ok schedule} or {:error keyword}. start-at defaults to now."

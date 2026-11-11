@@ -4,7 +4,9 @@
 
 A small bank ledger in Clojure and Datomic. Money can't be created, lost or spent twice, it moves between USD and BRL at a recorded rate, and you can read any account's balance on any past date.
 
-I built it to learn how Nubank builds software: Clojure, immutable data and Datomic.
+I built it to learn how Nubank builds software: Clojure, immutable data and Datomic, with [Schema](https://github.com/plumatic/schema) for request validation and [Component](https://github.com/stuartsierra/component) for startup and shutdown.
+
+**[How it works, and why →](docs/DESIGN.md)**: architecture, the life of a transfer, the data model, and the trade-offs.
 
 ## Features
 
@@ -12,6 +14,8 @@ I built it to learn how Nubank builds software: Clojure, immutable data and Dato
 - **Cross-currency transfers.** The rate used is stored on the transfer, and changing the rate never rewrites the past.
 - **Idempotent transfers.** A retry with the same `Idempotency-Key` never moves money twice.
 - **No overdraft under load.** The balance check runs inside the database transaction.
+- **Night limits.** Customers can send less between 20:00 and 06:00 local time, like Brazil's Pix. The limit is a total per period, enforced inside the transaction.
+- **Credit cards** with a credit limit, purchases, and a monthly bill read from Datomic's history.
 - **Reversals.** A transfer is undone by adding its exact opposite; nothing is ever deleted.
 - **Scheduled transfers** (every minute, day, week or month) that can't pay twice, even after a crash.
 - **Audit trail.** Every write records who, from where and with which request id, on the transaction itself.
@@ -39,7 +43,9 @@ A bank ledger has jobs that are easy to get wrong:
 | **Append-only.** Datomic never overwrites, and a reversal adds the opposite entries instead of deleting. | `?as-of=` comes for free, and the full history is always auditable. |
 | **The FX rate is stored on each transfer.** Reversals use the original amounts, not today's rate. | A rate change can never alter what already happened. |
 | **Idempotency key per transfer** (unique in the database). Scheduled runs use `schedule-id + run time` as the key. | A retried request, or a scheduler that crashes mid-run, can't pay twice. |
-| **Checks run inside Datomic transaction functions** (`transfer-tx`, `reverse-tx`). | Datomic runs transactions one at a time, so a check and its write can't be interleaved. No locks, no retry loops. |
+| **Checks run inside Datomic transaction functions** (`transfer-tx`, `reverse-tx`). | Datomic runs transactions one at a time, so a check and its write can't be interleaved. No locks, no retry loops. The balance, credit and night-limit checks all work this way. |
+| **A credit card is an account allowed below zero**, down to its limit. Its closed bill is its balance `as-of` the closing time. | Purchases and payments are ordinary transfers with the same checks, and the bill needs no extra bookkeeping. |
+| **Schemas check the shape of a request; the ledger checks the rules.** | A malformed request is a 400 that names each bad field; a well-formed one that breaks a rule is a 422. |
 | **Audit data is attached to the transaction entity.** | The who/where/request id is stored atomically with the data it explains, so it can't be missing. |
 | **Pure rules live in `ledger.clj`.** | The rules that matter most are the easiest to test. |
 | **Amounts are integer cents, and conversion uses banker's rounding.** | No floating-point errors, and no systematic rounding bias. |
@@ -78,6 +84,10 @@ Open http://localhost:3000 and click **Create demo accounts** to get Gui (USD) a
 | `GET /accounts/:id/statement?from=&to=&limit=&cursor=` | Newest first; pass `next-cursor` for the next page |
 | `POST /deposits {to, amount}` | Needs an `Idempotency-Key` header |
 | `POST /transfers {from, to, amount}` | Needs an `Idempotency-Key` header; converts the currency if needed |
+| `GET /accounts/:id/limit` | The day or night limit in force, what's used, and when it resets |
+| `POST /accounts/:id/card {credit-limit, closing-day}` | Opens a credit card paid from this account (`closing-day` 1–28) |
+| `POST /cards/:id/purchases {amount, merchant}` · `POST /cards/:id/payments {amount}` | Need an `Idempotency-Key`; payments come from the linked account |
+| `GET /cards/:id/bill` | Owed, available credit, the last closed bill and this cycle's spending |
 | `GET /transfers/:id` | The transfer plus its audit record |
 | `POST /transfers/:id/reversal` | Reverse once; calling it again returns the same reversal |
 | `GET /fx-rates` · `PUT /fx-rates {from, to, rate}` | Sets the rate and its inverse |
@@ -96,15 +106,15 @@ curl -s -H 'content-type: application/json' -H 'Idempotency-Key: tr-1' \
 | Response | When |
 |---|---|
 | `201` | Done, or a retry of something already done |
-| `400` | Missing `Idempotency-Key`, or a malformed field |
+| `400` | Missing `Idempotency-Key`, or a malformed field (`details` names each one) |
 | `404` | Unknown account, transfer or schedule |
-| `409` `idempotency-conflict` | The same key was sent with different data |
-| `422` | Breaks a rule: `insufficient-funds`, `invalid-amount`, `same-account`, `cannot-reverse-reversal`, ... |
+| `409` | `idempotency-conflict` (same key, different data) or `card-exists` |
+| `422` | Breaks a rule: `insufficient-funds`, `over-limit`, `card-not-allowed`, `invalid-amount`, `same-account`, `cannot-reverse-reversal`, ... |
 
 ## Tests
 
 ```bash
-clojure -M:test   # 15 tests, 69 assertions
+clojure -M:test   # 22 tests, 125 assertions
 ```
 
 - **Property-based** (test.check): random transfers across USD and BRL accounts keep every currency at zero and no customer balance negative.
@@ -113,6 +123,9 @@ clojure -M:test   # 15 tests, 69 assertions
 - **FX:** the stored rate, a rate change not touching old transfers, and a reversal using the original amounts.
 - **Reversals:** reversing once only, no reversing a reversal, and no clawing back money the receiver already spent.
 - **Schedules:** due/not-due runs, failed runs recorded, cancelling.
+- **Night limits:** day/night periods across time zones and daylight saving, a period's total, and 40 concurrent transfers that can't jointly pass the limit.
+- **Cards:** the credit limit, cards refused for transfers, a closed bill read with `as-of`, payments and refunds.
+- **System:** the whole app starts on a random port and releases it when stopped.
 - **Audit, paging, date filters, persistence across connections, and the HTTP layer end to end.**
 
 Assertions use [matcher-combinators](https://github.com/nubank/matcher-combinators).
@@ -122,13 +135,15 @@ Assertions use [matcher-combinators](https://github.com/nubank/matcher-combinato
 ```
 src/mini_nu/
   schema.clj    Datomic schema
-  ledger.clj    pure rules: validation, double entry, FX, reversal, schedule dates
+  ledger.clj    pure rules: validation, double entry, FX, reversal, limits, bill cycles, schedule dates
   db.clj        queries, transaction functions, writes, the scheduler
-  http.clj      routes, audit and metrics middleware, startup
+  http.clj      routes with Schema validation, audit and metrics middleware
+  system.clj    Component system: database, scheduler, web server; main entry point
   metrics.clj   in-process counters
 resources/public/
   index.html    demo page (plain HTML + JS, no build step)
-test/mini_nu/   ledger, db, features and http tests
+docs/DESIGN.md  architecture, diagrams and trade-offs
+test/mini_nu/   ledger, db, features, cards/limits, http and system tests
 ```
 
 ## What I'd do next
@@ -137,3 +152,5 @@ test/mini_nu/   ledger, db, features and http tests
 - Authentication, with the audit actor taken from the verified identity instead of a header.
 - Pull live FX quotes with an expiry time instead of a manually set rate.
 - Move statement filtering into the database index for accounts with millions of entries.
+- Limits and card terms per customer, stored with history like FX rates, instead of constants.
+- Interest and minimum payments on card bills.

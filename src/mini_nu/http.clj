@@ -3,46 +3,42 @@
             [mini-nu.db :as db]
             [mini-nu.metrics :as metrics]
             [muuntaja.core :as m]
+            [reitit.coercion.schema :as schema-coercion]
             [reitit.ring :as ring]
+            [reitit.ring.coercion :as coercion]
             [reitit.ring.middleware.exception :as exception]
             [reitit.ring.middleware.muuntaja :as muuntaja]
             [reitit.ring.middleware.parameters :as parameters]
-            [ring.adapter.jetty :as jetty]
-            [ring.util.response :as response])
-  (:import (java.time Instant)
-           (java.util Date))
-  (:gen-class))
+            [ring.util.response :as response]
+            [schema.core :as s])
+  (:import (java.util Date)))
 
 (def ^:private error-status
   {:invalid-amount 422
    :same-account 422
    :insufficient-funds 422
+   :over-limit 422
+   :card-not-allowed 422
    :no-fx-rate 422
    :cannot-reverse-reversal 422
    :invalid-schedule 422
+   :invalid-closing-day 422
    :unknown-account 404
+   :unknown-card 404
    :unknown-transfer 404
    :unknown-schedule 404
-   :idempotency-conflict 409})
+   :idempotency-conflict 409
+   :card-exists 409})
 
-(defn- ->uuid [s] (when (string? s) (parse-uuid s)))
-(defn- ->amount [n] (when (int? n) (long n)))
-(defn- ->long [s] (when (string? s) (parse-long s)))
-(defn- ->date [s] (when (string? s) (try (Date/from (Instant/parse s)) (catch Exception _ nil))))
-(defn- ->rate [n] (when (number? n) (let [r (BigDecimal. (str n))] (when (pos? r) r))))
-(defn- bad-request [msg] {:status 400 :body {:error msg}})
+;; Schemas check the shape of a request (a 400 when wrong). Business rules, like
+;; "amount must be positive", stay in the ledger and answer 422.
+(def ^:private Currency (s/enum "USD" "BRL"))
+(def ^:private IdPath {:id s/Uuid})
 
 (defn- result->response [{:keys [ok error]} status]
   (if error
     {:status (error-status error 400) :body {:error error}}
     {:status status :body ok}))
-
-(defn- db-as-of
-  "Datomic refuses a time after its latest transaction; the present db is the answer then."
-  [db date]
-  (try (d/as-of db date)
-       (catch clojure.lang.ExceptionInfo e
-         (if (= :cognitect.anomalies/unavailable (:cognitect.anomalies/category (ex-data e))) db (throw e)))))
 
 (defn- wrap-audit
   "Gives every request an id (echoed in X-Request-Id) and the audit record that writes carry."
@@ -64,30 +60,25 @@
         (metrics/record-request! route (:status resp) (/ (Math/round (/ (- (System/nanoTime) t0) 1e4)) 100.0)))
       resp)))
 
-(defn- money-move [conn move! {:keys [body-params headers audit]} req]
-  (let [k (get headers "idempotency-key")]
-    (cond
-      (nil? k) (bad-request "Idempotency-Key header is required")
-      (some nil? (vals req)) (bad-request "missing or malformed field")
-      :else (let [result (move! conn (assoc req :idempotency-key k :amount (->amount (:amount body-params))) audit)]
-              (metrics/record-outcome! (if (:ok result) :ok (:error result)))
-              (result->response result 201)))))
+(defn- malformed [e _]
+  (let [errors (:errors (ex-data e))]
+    {:status 400 :body {:error :malformed-request
+                        :details (if (map? errors) (update-vals errors pr-str) (pr-str errors))}}))
 
-(defn- with-account [conn {{:keys [id]} :path-params} f]
-  (let [id (->uuid id)
-        db (d/db conn)]
-    (if (and id (db/account? db id))
-      (f db id)
+(defn- money-move
+  "Writes that move money need an Idempotency-Key header."
+  [move! {:keys [headers audit]} req]
+  (if-let [k (get headers "idempotency-key")]
+    (let [result (move! (assoc req :idempotency-key k) audit)]
+      (metrics/record-outcome! (if (:ok result) :ok (:error result)))
+      (result->response result 201))
+    {:status 400 :body {:error "Idempotency-Key header is required"}}))
+
+(defn- with-account [conn id f]
+  (let [db (d/db conn)]
+    (if (db/account? db id)
+      (f db)
       {:status 404 :body {:error :unknown-account}})))
-
-(defn- statement-handler [conn {{:strs [from to limit cursor]} :query-params :as req}]
-  (with-account conn req
-    (fn [db id]
-      (let [opts {:from (->date from) :to (->date to) :cursor (->long cursor)
-                  :limit (some-> (->long limit) (max 1) (min 200))}]
-        (if (or (and from (nil? (:from opts))) (and to (nil? (:to opts))) (and cursor (nil? (:cursor opts))))
-          (bad-request "from/to must be ISO instants and cursor a :next-cursor value")
-          {:status 200 :body (db/statement db id opts)})))))
 
 (defn app [conn]
   (ring/ring-handler
@@ -97,90 +88,99 @@
                         (response/content-type "text/html; charset=utf-8")))}]
      ["/accounts"
       {:get (fn [_] {:status 200 :body (db/accounts (d/db conn))})
-       :post (fn [{{:keys [owner currency] :or {currency "USD"}} :body-params audit :audit}]
-               (if (and (string? owner) (db/currencies currency))
-                 {:status 201 :body {:id (db/open-account! conn owner currency audit)}}
-                 (bad-request "owner is required and currency must be USD or BRL")))}]
+       :post {:parameters {:body {:owner s/Str (s/optional-key :currency) Currency}}
+              :handler (fn [{{{:keys [owner currency] :or {currency "USD"}} :body} :parameters audit :audit}]
+                         {:status 201 :body {:id (db/open-account! conn owner currency audit)}})}}]
      ["/accounts/:id/balance"
-      {:get (fn [{{:strs [as-of]} :query-params :as req}]
-              (with-account conn req
-                (fn [db id]
-                  (if-let [db (if as-of (some->> (->date as-of) (db-as-of db)) db)]
-                    {:status 200 :body {:account id :balance (db/balance db id)}}
-                    (bad-request "as-of must be an ISO instant, e.g. 2026-12-01T00:00:00Z")))))}]
-     ["/accounts/:id/statement" {:get #(statement-handler conn %)}]
+      {:get {:parameters {:path IdPath :query {(s/optional-key :as-of) s/Inst}}
+             :handler (fn [{{{:keys [id]} :path {:keys [as-of]} :query} :parameters}]
+                        (with-account conn id
+                          (fn [db] {:status 200 :body {:account id :balance (db/balance (cond->> db as-of (db/as-of db)) id)}})))}}]
+     ["/accounts/:id/statement"
+      {:get {:parameters {:path IdPath
+                          :query {(s/optional-key :from) s/Inst (s/optional-key :to) s/Inst
+                                  (s/optional-key :limit) s/Int (s/optional-key :cursor) s/Int}}
+             :handler (fn [{{{:keys [id]} :path q :query} :parameters}]
+                        (with-account conn id
+                          (fn [db] {:status 200 :body (db/statement db id (update q :limit #(some-> % (max 1) (min 200))))})))}}]
      ["/accounts/:id/schedules"
-      {:get (fn [req] (with-account conn req (fn [db id] {:status 200 :body (db/schedules db id)})))}]
+      {:get {:parameters {:path IdPath}
+             :handler (fn [{{{:keys [id]} :path} :parameters}]
+                        (with-account conn id (fn [db] {:status 200 :body (db/schedules db id)})))}}]
+     ["/accounts/:id/limit"
+      {:get {:parameters {:path IdPath}
+             :handler (fn [{{{:keys [id]} :path} :parameters}]
+                        (if-let [l (db/limit (d/db conn) id (Date.))]
+                          {:status 200 :body l}
+                          {:status 404 :body {:error :unknown-account}}))}}]
+     ["/accounts/:id/card"
+      {:post {:parameters {:path IdPath :body {:credit-limit s/Int :closing-day s/Int}}
+              :handler (fn [{{{:keys [id]} :path body :body} :parameters audit :audit}]
+                         (result->response (db/open-card! conn id body audit) 201))}}]
+     ["/cards/:id/bill"
+      {:get {:parameters {:path IdPath}
+             :handler (fn [{{{:keys [id]} :path} :parameters}]
+                        (if-let [b (db/bill (d/db conn) id (Date.))]
+                          {:status 200 :body b}
+                          {:status 404 :body {:error :unknown-card}}))}}]
+     ["/cards/:id/purchases"
+      {:post {:parameters {:path IdPath :body {:amount s/Int :merchant s/Str}}
+              :handler (fn [{{{:keys [id]} :path body :body} :parameters :as req}]
+                         (money-move #(db/purchase! conn %1 %2) req (assoc body :card-id id)))}}]
+     ["/cards/:id/payments"
+      {:post {:parameters {:path IdPath :body {:amount s/Int}}
+              :handler (fn [{{{:keys [id]} :path body :body} :parameters :as req}]
+                         (money-move #(db/pay-bill! conn %1 %2) req (assoc body :card-id id)))}}]
      ["/deposits"
-      {:post (fn [{p :body-params :as req}]
-               (money-move conn db/deposit! req {:to (->uuid (:to p))}))}]
+      {:post {:parameters {:body {:to s/Uuid :amount s/Int}}
+              :handler (fn [{{:keys [body]} :parameters :as req}]
+                         (money-move #(db/deposit! conn %1 %2) req body))}}]
      ["/transfers"
-      {:post (fn [{p :body-params :as req}]
-               (money-move conn db/transfer! req {:from (->uuid (:from p)) :to (->uuid (:to p))}))}]
+      {:post {:parameters {:body {:from s/Uuid :to s/Uuid :amount s/Int}}
+              :handler (fn [{{:keys [body]} :parameters :as req}]
+                         (money-move #(db/transfer! conn %1 %2) req body))}}]
      ["/transfers/:id"
-      {:get (fn [{{:keys [id]} :path-params}]
-              (if-let [t (some->> (->uuid id) (db/get-transfer (d/db conn)))]
-                {:status 200 :body t}
-                {:status 404 :body {:error :unknown-transfer}}))}]
+      {:get {:parameters {:path IdPath}
+             :handler (fn [{{{:keys [id]} :path} :parameters}]
+                        (if-let [t (db/get-transfer (d/db conn) id)]
+                          {:status 200 :body t}
+                          {:status 404 :body {:error :unknown-transfer}}))}}]
      ["/transfers/:id/reversal"
-      {:post (fn [{{:keys [id]} :path-params audit :audit}]
-               (if-let [id (->uuid id)]
-                 (let [result (db/reverse! conn id audit)]
-                   (metrics/record-outcome! (if (:ok result) :ok (:error result)))
-                   (result->response result 201))
-                 (bad-request "transfer id must be a UUID")))}]
+      {:post {:parameters {:path IdPath}
+              :handler (fn [{{{:keys [id]} :path} :parameters audit :audit}]
+                         (let [result (db/reverse! conn id audit)]
+                           (metrics/record-outcome! (if (:ok result) :ok (:error result)))
+                           (result->response result 201)))}}]
      ["/fx-rates"
       {:get (fn [_] {:status 200 :body (db/fx-rates (d/db conn))})
-       :put (fn [{{:keys [from to rate]} :body-params audit :audit}]
-              (if-let [rate (and (db/currencies from) (db/currencies to) (not= from to) (->rate rate))]
-                (do (db/set-rate! conn from to rate audit)
-                    {:status 200 :body (db/fx-rates (d/db conn))})
-                (bad-request "from/to must be different currencies (USD, BRL) and rate a positive number")))}]
+       :put {:parameters {:body {:from Currency :to Currency :rate (s/constrained s/Num pos? 'positive)}}
+             :handler (fn [{{{:keys [from to rate]} :body} :parameters audit :audit}]
+                        (if (= from to)
+                          {:status 400 :body {:error "from and to must be different currencies"}}
+                          (do (db/set-rate! conn from to (BigDecimal. (str rate)) audit)
+                              {:status 200 :body (db/fx-rates (d/db conn))})))}}]
      ["/schedules"
-      {:post (fn [{p :body-params audit :audit}]
-               (if (and (:start-at p) (nil? (->date (:start-at p))))
-                 (bad-request "start-at must be an ISO instant")
-                 (result->response (db/create-schedule! conn {:from (->uuid (:from p)) :to (->uuid (:to p))
-                                                              :amount (->amount (:amount p)) :every (:every p)
-                                                              :start-at (->date (:start-at p))}
-                                                        audit)
-                                   201)))}]
+      {:post {:parameters {:body {:from s/Uuid :to s/Uuid :amount s/Int
+                                  :every (apply s/enum db/schedule-frequencies)
+                                  (s/optional-key :start-at) s/Inst}}
+              :handler (fn [{{:keys [body]} :parameters audit :audit}]
+                         (result->response (db/create-schedule! conn body audit) 201))}}]
      ["/schedules/:id"
-      {:delete (fn [{{:keys [id]} :path-params audit :audit}]
-                 (if-let [id (->uuid id)]
-                   (result->response (db/cancel-schedule! conn id audit) 200)
-                   (bad-request "schedule id must be a UUID")))}]
+      {:delete {:parameters {:path IdPath}
+                :handler (fn [{{{:keys [id]} :path} :parameters audit :audit}]
+                           (result->response (db/cancel-schedule! conn id audit) 200))}}]
      ["/metrics"
       {:get (fn [_] {:status 200 :body (assoc (metrics/snapshot) :ledger (db/stats (d/db conn)))})}]]
     {:data {:muuntaja m/instance
+            :coercion schema-coercion/coercion
             :middleware [wrap-metrics
                          wrap-audit
                          parameters/parameters-middleware
                          muuntaja/format-negotiate-middleware
                          muuntaja/format-response-middleware
-                         ;; turns malformed JSON into a 400 instead of a 500
-                         exception/exception-middleware
-                         muuntaja/format-request-middleware]}})
+                         ;; malformed JSON and requests that fail their schema answer 400, not 500
+                         (exception/create-exception-middleware
+                          (assoc exception/default-handlers :reitit.coercion/request-coercion malformed))
+                         muuntaja/format-request-middleware
+                         coercion/coerce-request-middleware]}})
    (ring/create-default-handler)))
-
-(defn- start-scheduler!
-  "Checks for due scheduled transfers every few seconds."
-  [conn]
-  (doto (Thread. (fn []
-                   (loop []
-                     (Thread/sleep 5000)
-                     (try (db/run-due-schedules! conn (Date.))
-                          (catch Exception e (println "scheduler:" (ex-message e))))
-                     (recur))))
-    (.setDaemon true)
-    (.start)))
-
-(defn -main [& _]
-  (let [port (parse-long (or (System/getenv "PORT") "3000"))
-        storage (let [s (or (System/getenv "MINI_NU_DATA") "data")] (if (= "mem" s) :mem s))
-        conn (db/connect! "mini-nu" storage)
-        server (jetty/run-jetty (app conn) {:port port :join? false})]
-    (start-scheduler! conn)
-    (println (str "mini-nu listening on http://localhost:" port
-                  (if (= :mem storage) " (in memory)" (str " (data in " storage "/)"))))
-    (.join server)))

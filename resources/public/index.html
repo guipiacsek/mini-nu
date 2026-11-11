@@ -48,6 +48,11 @@
   button.danger { background:transparent; color:var(--err); border-color:var(--err); }
   button:disabled { opacity:.4; cursor:default; }
   .hint { color:var(--muted); font-size:12.5px; margin:8px 0 0; }
+  .meter { height:6px; background:var(--soft); border-radius:3px; overflow:hidden; margin-top:6px; }
+  .meter div { height:100%; background:var(--accent); } .meter div.low { background:var(--warn); }
+  .acct.card { padding-left:28px; } .acct.card .avatar { width:28px; height:28px; font-size:13px; border-radius:7px; }
+  .kv { display:grid; grid-template-columns:1fr auto; gap:4px 12px; font-size:13.5px; margin:0 0 12px; }
+  .kv dt { color:var(--muted); } .kv dd { margin:0; text-align:right; font-weight:600; font-variant-numeric:tabular-nums; }
   .preview { margin-top:8px; padding:8px 10px; border-radius:9px; background:var(--soft); font-size:13px; min-height:36px; }
   .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin:-4px 0 14px; overflow-x:auto; }
   .tabs button { background:none; border:none; border-bottom:2px solid transparent; border-radius:0; color:var(--muted); padding:8px 10px; white-space:nowrap; }
@@ -125,6 +130,7 @@
           <button class="on" data-pane="send">Send</button>
           <button data-pane="deposit">Deposit</button>
           <button data-pane="schedule">Schedule</button>
+          <button data-pane="cardPane">Card</button>
         </div>
 
         <form class="pane" id="send">
@@ -134,6 +140,7 @@
           </div>
           <div class="row"><label class="f grow">Amount <input type="number" id="sAmt" value="25" min="0.01" step="0.01" required></label></div>
           <div class="preview" id="sPreview"></div>
+          <div class="hint" id="sLimit"></div>
           <div class="row" style="margin-top:10px">
             <button>Send</button>
             <button type="button" class="ghost" id="retryBtn" disabled>Retry (same key)</button>
@@ -165,6 +172,8 @@
           <div class="row" style="margin-top:10px"><button>Create schedule</button></div>
           <p class="hint">The scheduler checks every 5 seconds. Each run uses the schedule and its date as the idempotency key, so it can never pay twice.</p>
         </form>
+
+        <div class="pane" id="cardPane" hidden><div id="cardBody"></div></div>
       </section>
     </div>
 
@@ -220,6 +229,12 @@ const ERRORS = {
   "unknown-transfer": "Transfer not found",
   "cannot-reverse-reversal": "A reversal can't be reversed",
   "no-fx-rate": "No exchange rate for that pair",
+  "over-limit": "Over the limit for this time of day",
+  "card-not-allowed": "A card can only pay for purchases",
+  "card-exists": "This account already has a card",
+  "unknown-card": "Card not found",
+  "invalid-closing-day": "Closing day must be 1 to 28",
+  "malformed-request": "Some fields are missing or invalid",
 };
 
 let transferCount = null, accounts = [], selected = null, rate = null, last = null, keyN = 0, cursor = null, open = null;
@@ -272,25 +287,29 @@ function setStatus(up, n) {
 // ---------- accounts ----------
 
 function renderAccounts(past) {
-  $("accounts").innerHTML = accounts.length ? accounts.map(a => `
-    <div class="acct${a.id === selected ? " sel" : ""}" data-id="${a.id}" role="button" tabindex="0">
-      <div class="avatar">${esc(a.owner[0].toUpperCase())}</div>
-      <div class="who"><b>${esc(a.owner)}</b><span class="badge">${a.currency}</span></div>
-      <div class="bal">${money(a.balance, a.currency)}${past ? `<span class="past">then: ${money(past[a.id], a.currency)}</span>` : ""}</div>
+  const ordered = checking().flatMap(a => [a, ...accounts.filter(c => c["card-of"] === a.id)]);
+  $("accounts").innerHTML = accounts.length ? ordered.map(a => `
+    <div class="acct${a.kind === "card" ? " card" : ""}${a.id === selected ? " sel" : ""}" data-id="${a.id}" role="button" tabindex="0">
+      <div class="avatar">${a.kind === "card" ? "▭" : esc(a.owner[0].toUpperCase())}</div>
+      <div class="who"><b>${a.kind === "card" ? "Credit card" : esc(a.owner)}</b><span class="badge">${a.currency}</span></div>
+      <div class="bal">${a.kind === "card"
+          ? `${money(Math.max(0, -a.balance), a.currency)}<span class="past" style="color:var(--muted)">owed · ${money(a["credit-limit"] + a.balance, a.currency)} free</span>`
+          : money(a.balance, a.currency)}${past ? `<span class="past">then: ${money(past[a.id], a.currency)}</span>` : ""}</div>
     </div>`).join("")
     : `<div class="empty">No accounts yet.<br><button id="demoBtn" style="margin-top:10px">Create demo accounts</button></div>`;
   $("demoBtn")?.addEventListener("click", createDemo);
-  const opts = accounts.map(a => `<option value="${a.id}">${esc(a.owner)} (${a.currency})</option>`).join("");
+  const opts = checking().map(a => `<option value="${a.id}">${esc(a.owner)} (${a.currency})</option>`).join("");
   for (const id of ["sFrom", "sTo", "dTo", "cFrom", "cTo"]) {
     const s = $(id), v = s.value;
     s.innerHTML = opts;
     if (accounts.some(a => a.id === v)) s.value = v;
   }
-  if (accounts.length > 1) {
+  if (checking().length > 1) {
     for (const [f, t] of [["sFrom", "sTo"], ["cFrom", "cTo"]])
-      if ($(f).value === $(t).value) $(t).value = accounts.find(a => a.id !== $(f).value).id;
+      if ($(f).value === $(t).value) $(t).value = checking().find(a => a.id !== $(f).value).id;
   }
   updatePreview();
+  loadLimit();
 }
 
 async function loadAccounts(quiet = true) {
@@ -316,6 +335,7 @@ $("accounts").addEventListener("click", e => {
   renderAccounts();
   loadActivity();
   loadSchedules();
+  if (!$("cardPane").hidden) loadCard();
 });
 $("accounts").addEventListener("keydown", e => { if (e.key === "Enter") e.target.closest(".acct")?.click(); });
 $("newAcctToggle").onclick = () => { $("newAcct").hidden = !$("newAcct").hidden; $("newOwner").focus(); };
@@ -351,6 +371,83 @@ $("rateBtn").onclick = async () => {
 // ---------- move money ----------
 
 const acct = id => accounts.find(a => a.id === id);
+const checking = () => accounts.filter(a => a.kind !== "card");
+const timeOnly = iso => new Date(iso).toLocaleTimeString([], { hour:"numeric", minute:"2-digit" });
+
+// ---------- time-of-day limit ----------
+
+async function loadLimit() {
+  const f = acct($("sFrom").value);
+  if (!f) { $("sLimit").innerHTML = ""; return; }
+  const l = (await api("GET", `/accounts/${f.id}/limit`, null, null, true)).data;
+  const pct = l.limit ? l.remaining / l.limit * 100 : 0;
+  $("sLimit").innerHTML = `${l.period === "night" ? "☾ Night" : "☀ Day"} limit: <b>${money(l.remaining, f.currency)}</b> of ${money(l.limit, f.currency)} left` +
+    ` · resets ${timeOnly(l["resets-at"])}<div class="meter"><div class="${pct < 25 ? "low" : ""}" style="width:${pct}%"></div></div>` +
+    `<span>Nights (20:00–06:00 local) have a lower limit, like Brazil's Pix.</span>`;
+}
+$("sFrom").addEventListener("change", loadLimit);
+
+// ---------- credit card ----------
+
+function cardFor(id) {
+  const a = acct(id);
+  return a?.kind === "card" ? a : accounts.find(c => c["card-of"] === id);
+}
+
+async function loadCard() {
+  const owner = acct(selected);
+  if (!owner) { $("cardBody").innerHTML = `<p class="empty">Open an account first.</p>`; return; }
+  const card = cardFor(owner.id);
+  const home = owner.kind === "card" ? acct(owner["card-of"]) : owner;
+  if (!card) {
+    $("cardBody").innerHTML = `<form class="row" id="openCard">
+        <p class="hint" style="width:100%;margin:0 0 4px">${esc(home.owner)} has no card yet. Bills are paid from this ${home.currency} account.</p>
+        <label class="f grow">Credit limit <input type="number" id="kLimit" value="1000" min="1" step="0.01" required></label>
+        <label class="f">Closes on day <input type="number" id="kDay" value="5" min="1" max="28" required style="width:90px"></label>
+        <button style="align-self:flex-end">Open card</button>
+      </form>`;
+    $("openCard").onsubmit = async e => {
+      e.preventDefault();
+      const r = await api("POST", `/accounts/${home.id}/card`, { "credit-limit": toCents($("kLimit").value), "closing-day": +$("kDay").value });
+      if (report(r, `Card opened for ${home.owner}`)) selected = r.data.id;
+      refreshAll();
+    };
+    return;
+  }
+  const b = (await api("GET", `/cards/${card.id}/bill`, null, null, true)).data;
+  const c = b.currency, cl = b.closed;
+  const status = { paid: `<span class="badge ok">paid</span>`, open: `<span class="badge">open</span>`, overdue: `<span class="badge err">overdue</span>` }[cl.status];
+  $("cardBody").innerHTML = `
+    <dl class="kv">
+      <dt>Owed now</dt><dd>${money(b.owed, c)}</dd>
+      <dt>Available credit</dt><dd>${money(b.available, c)} of ${money(b["credit-limit"], c)}</dd>
+      <dt>Last bill (closed ${new Date(cl["closed-at"]).toLocaleDateString()})</dt><dd>${money(cl.amount, c)} ${status}</dd>
+      ${cl.remaining ? `<dt>Still due by ${new Date(cl["due-at"]).toLocaleDateString()}</dt><dd>${money(cl.remaining, c)}</dd>` : ""}
+      <dt>This cycle so far (closes ${new Date(b.current["closes-at"]).toLocaleDateString()})</dt><dd>${money(b.current.spent, c)}</dd>
+    </dl>
+    <form class="row" id="buy">
+      <input class="grow" id="kMerchant" placeholder="Merchant" value="Publix" required maxlength="40" aria-label="Merchant">
+      <input type="number" id="kAmt" value="12.50" min="0.01" step="0.01" required style="width:110px" aria-label="Amount">
+      <button>Buy</button>
+    </form>
+    <form class="row" id="pay">
+      <input class="grow" type="number" id="kPay" value="${((cl.remaining || b.owed) / 100).toFixed(2)}" min="0.01" step="0.01" required aria-label="Payment amount">
+      <button class="ghost">Pay from ${esc(acct(card["card-of"]).owner)}'s account</button>
+    </form>
+    <p class="hint">The last bill is the card's balance as of its closing time, read back from Datomic's history. Payments go to the oldest bill first.</p>`;
+  $("buy").onsubmit = async e => {
+    e.preventDefault();
+    report(await api("POST", `/cards/${card.id}/purchases`, { amount: toCents($("kAmt").value), merchant: $("kMerchant").value.trim() }, "buy-" + Date.now() + "-" + ++keyN),
+           `Bought ${money(toCents($("kAmt").value), c)} at ${$("kMerchant").value}`);
+    refreshAll();
+  };
+  $("pay").onsubmit = async e => {
+    e.preventDefault();
+    report(await api("POST", `/cards/${card.id}/payments`, { amount: toCents($("kPay").value) }, "pay-" + Date.now() + "-" + ++keyN),
+           `Paid ${money(toCents($("kPay").value), c)} toward the card`);
+    refreshAll();
+  };
+}
 
 function updatePreview() {
   const f = acct($("sFrom").value), t = acct($("sTo").value), cents = toCents($("sAmt").value);
@@ -410,8 +507,8 @@ $("schedule").onsubmit = async e => {
 
 // ---------- activity ----------
 
-const ICON = { deposit: "↓", transfer: "⇄", reversal: "↺", scheduled: "⟳" };
-const LABEL = { deposit: "Deposit", transfer: "Transfer", reversal: "Reversal", scheduled: "Scheduled" };
+const ICON = { deposit: "↓", transfer: "⇄", reversal: "↺", scheduled: "⟳", purchase: "▭", "card-payment": "✓" };
+const LABEL = { deposit: "Deposit", transfer: "Transfer", reversal: "Reversal", scheduled: "Scheduled", purchase: "Card purchase", "card-payment": "Card payment" };
 
 function txRow(i) {
   const isOpen = open === i["transfer-id"];
@@ -529,12 +626,14 @@ function switchTab(group, pane) {
   }
   if (pane === "metrics") loadMetrics();
   if (pane === "schedules") loadSchedules();
+  if (pane === "cardPane") loadCard();
 }
 for (const g of ["moveTabs", "viewTabs"]) $(g).addEventListener("click", e => { const b = e.target.closest("button"); if (b) switchTab(g, b.dataset.pane); });
 
 async function refreshAll() {
   await loadAccounts();
-  await Promise.all([loadActivity(), loadSchedules(), loadMetrics()]);
+  // the card pane has forms, so it refreshes after actions, not on the 5s poll
+  await Promise.all([loadActivity(), loadSchedules(), loadMetrics(), $("cardPane").hidden ? null : loadCard()]);
 }
 
 (async () => {

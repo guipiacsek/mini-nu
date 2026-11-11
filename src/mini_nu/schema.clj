@@ -9,6 +9,10 @@
    (attr :account/currency :db.type/string)
    ;; the bank's own accounts (one per currency) may go below zero
    (attr :account/external? :db.type/boolean)
+   ;; a credit card is an account allowed to go below zero, down to its limit
+   (attr :account/credit-limit :db.type/long)
+   (attr :account/closing-day :db.type/long)
+   (attr :account/card-of :db.type/ref :db/unique :db.unique/value) ; the checking account that pays the bill
 
    (attr :transfer/id :db.type/uuid :db/unique :db.unique/identity)
    (attr :transfer/idempotency-key :db.type/string :db/unique :db.unique/value)
@@ -19,6 +23,7 @@
    (attr :transfer/fx-rate :db.type/bigdec)            ; only on cross-currency transfers
    (attr :transfer/reverses :db.type/ref :db/unique :db.unique/value)
    (attr :transfer/schedule :db.type/ref)
+   (attr :transfer/memo :db.type/string)                ; the merchant, on card purchases
    (attr :transfer/entries :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true)
 
    ;; amounts are integer cents: negative = debit, positive = credit

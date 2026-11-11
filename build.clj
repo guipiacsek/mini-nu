@@ -12,6 +12,6 @@
 (defn uber [_]
   (clean nil)
   (b/copy-dir {:src-dirs ["src" "resources"] :target-dir class-dir})
-  (b/compile-clj {:basis @basis :ns-compile '[mini-nu.http] :class-dir class-dir})
-  (b/uber {:class-dir class-dir :uber-file uber-file :basis @basis :main 'mini-nu.http})
+  (b/compile-clj {:basis @basis :ns-compile '[mini-nu.system] :class-dir class-dir})
+  (b/uber {:class-dir class-dir :uber-file uber-file :basis @basis :main 'mini-nu.system})
   (println "Built" uber-file))
